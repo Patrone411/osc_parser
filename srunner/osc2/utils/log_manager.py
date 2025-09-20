@@ -1,7 +1,7 @@
 import logging
 import sys
 
-from srunner.osc2.osc_preprocess.import_msg import create_ImportMsg as import_msg
+from osc_parser.srunner.osc2.osc_preprocess.import_msg import create_ImportMsg as import_msg
 
 try:
     from tests.run_testcase.log_msg import create_LogMsg as log_msg

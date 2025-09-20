@@ -4,7 +4,7 @@ import re
 import sys
 from typing import List
 
-from srunner.osc2_dm.physical_object import *
+from .physical_object import *
 
 
 class Range(object):

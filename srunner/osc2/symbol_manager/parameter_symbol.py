@@ -1,4 +1,4 @@
-from srunner.osc2.symbol_manager.typed_symbol import TypedSymbol
+from osc_parser.srunner.osc2.symbol_manager.typed_symbol import TypedSymbol
 
 
 class ParameterSymbol(TypedSymbol):

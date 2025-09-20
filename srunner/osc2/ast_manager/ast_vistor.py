@@ -1,8 +1,5 @@
-import ast
-
-import srunner.osc2.ast_manager.ast_node as ast_node
-from srunner.osc2.ast_manager.ast_node import AST
-from srunner.tools.osc2_helper import OSC2Helper
+from . import ast_node
+from .ast_node import AST
 
 
 class BaseVisitor(object):

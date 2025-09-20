@@ -2,7 +2,7 @@
 # lexical construct in the input language. Examples include structs,
 # functions, {...} code blocks, argument lists, etc...
 
-from srunner.osc2.utils.log_manager import LOG_ERROR
+from osc_parser.srunner.osc2.utils.log_manager import LOG_ERROR
 
 
 class Scope:

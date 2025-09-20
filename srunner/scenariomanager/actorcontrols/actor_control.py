@@ -20,9 +20,9 @@ import sys
 
 import carla
 
-from srunner.scenariomanager.actorcontrols.external_control import ExternalControl
-from srunner.scenariomanager.actorcontrols.npc_vehicle_control import NpcVehicleControl
-from srunner.scenariomanager.actorcontrols.pedestrian_control import PedestrianControl
+from osc_parser.srunner.scenariomanager.actorcontrols.external_control import ExternalControl
+from osc_parser.srunner.scenariomanager.actorcontrols.npc_vehicle_control import NpcVehicleControl
+from osc_parser.srunner.scenariomanager.actorcontrols.pedestrian_control import PedestrianControl
 
 
 class ActorControl(object):

@@ -1,5 +1,5 @@
-from srunner.osc2.symbol_manager.base_scope import BaseScope
-from srunner.osc2.utils.log_manager import *
+from osc_parser.srunner.osc2.symbol_manager.base_scope import BaseScope
+from osc_parser.srunner.osc2.utils.log_manager import *
 
 
 class LocalScope(BaseScope):

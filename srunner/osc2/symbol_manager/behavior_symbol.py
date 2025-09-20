@@ -1,5 +1,5 @@
-from srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from srunner.osc2.symbol_manager.local_scope import LocalScope
+from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc_parser.srunner.osc2.symbol_manager.local_scope import LocalScope
 
 
 class BehaviorInvocationSymbol(BaseSymbol):

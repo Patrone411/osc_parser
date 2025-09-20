@@ -1,9 +1,9 @@
 import carla
 from carla import LandmarkType, Waypoint
 
-from srunner.osc2_dm.physical_types import Physical
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.tools.osc2_helper import OSC2Helper
+from osc_parser.srunner.osc2_dm.physical_types import Physical
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.tools.osc2_helper import OSC2Helper
 
 
 class OverJunctionCheck:

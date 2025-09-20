@@ -1,5 +1,5 @@
-from srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from srunner.osc2.symbol_manager.typed_symbol import TypedSymbol
+from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc_parser.srunner.osc2.symbol_manager.typed_symbol import TypedSymbol
 
 
 class ArgumentSymbol(BaseSymbol):

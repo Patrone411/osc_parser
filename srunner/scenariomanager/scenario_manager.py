@@ -16,11 +16,11 @@ import time
 
 import py_trees
 
-from srunner.autoagents.agent_wrapper import AgentWrapper
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.result_writer import ResultOutputProvider
-from srunner.scenariomanager.timer import GameTime
-from srunner.scenariomanager.watchdog import Watchdog
+from osc_parser.srunner.autoagents.agent_wrapper import AgentWrapper
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.result_writer import ResultOutputProvider
+from osc_parser.srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.scenariomanager.watchdog import Watchdog
 
 
 class ScenarioManager(object):

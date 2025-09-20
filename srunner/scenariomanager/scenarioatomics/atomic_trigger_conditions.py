@@ -28,12 +28,12 @@ import carla
 
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
-from srunner.scenariomanager.scenarioatomics.atomic_behaviors import calculate_distance
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.timer import GameTime
-from srunner.tools.scenario_helper import get_distance_along_route, get_distance_between_actors
+from osc_parser.srunner.scenariomanager.scenarioatomics.atomic_behaviors import calculate_distance
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.tools.scenario_helper import get_distance_along_route, get_distance_between_actors
 
-import srunner.tools as sr_tools
+from osc_parser.srunner.tools import sr_tools
 
 EPSILON = 0.001
 

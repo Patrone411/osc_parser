@@ -1,4 +1,4 @@
-from srunner.osc2.symbol_manager.local_scope import LocalScope
+from osc_parser.srunner.osc2.symbol_manager.local_scope import LocalScope
 
 # compositionOperator : 'serial' | 'one_of' | 'parallel';
 

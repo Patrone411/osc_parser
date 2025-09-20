@@ -12,8 +12,8 @@ This module provides an example control for vehicles
 import math
 
 import carla
-from srunner.scenariomanager.actorcontrols.basic_control import BasicControl
-from srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.scenariomanager.actorcontrols.basic_control import BasicControl
+from osc_parser.srunner.scenariomanager.timer import GameTime
 
 
 class VehicleTeleportControl(BasicControl):

@@ -1,36 +1,36 @@
 import copy
 from pydoc import resolve
 
-import srunner.osc2.ast_manager.ast_node as ast_node
-from srunner.osc2.osc2_parser.OpenSCENARIO2Listener import OpenSCENARIO2Listener
-from srunner.osc2.osc2_parser.OpenSCENARIO2Parser import OpenSCENARIO2Parser
-from srunner.osc2.symbol_manager.action_symbol import ActionSymbol
-from srunner.osc2.symbol_manager.actor_symbol import ActorSymbol
-from srunner.osc2.symbol_manager.argument_symbol import *
-from srunner.osc2.symbol_manager.constraint_decl_scope import *
-from srunner.osc2.symbol_manager.do_directive_scope import *
-from srunner.osc2.symbol_manager.doMember_symbol import DoMemberSymbol
-from srunner.osc2.symbol_manager.enum_symbol import *
-from srunner.osc2.symbol_manager.event_symbol import *
-from srunner.osc2.symbol_manager.global_scope import GlobalScope
-from srunner.osc2.symbol_manager.inherits_condition_symbol import *
-from srunner.osc2.symbol_manager.method_symbol import MethodSymbol
-from srunner.osc2.symbol_manager.modifier_symbol import *
-from srunner.osc2.symbol_manager.parameter_symbol import ParameterSymbol
-from srunner.osc2.symbol_manager.physical_type_symbol import PhysicalTypeSymbol
-from srunner.osc2.symbol_manager.qualifiedBehavior_symbol import QualifiedBehaviorSymbol
-from srunner.osc2.symbol_manager.scenario_symbol import ScenarioSymbol
-from srunner.osc2.symbol_manager.si_exponent_symbol import (
+from . import ast_node
+from osc_parser.srunner.osc2.osc2_parser.OpenSCENARIO2Listener import OpenSCENARIO2Listener
+from osc_parser.srunner.osc2.osc2_parser.OpenSCENARIO2Parser import OpenSCENARIO2Parser
+from osc_parser.srunner.osc2.symbol_manager.action_symbol import ActionSymbol
+from osc_parser.srunner.osc2.symbol_manager.actor_symbol import ActorSymbol
+from osc_parser.srunner.osc2.symbol_manager.argument_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.constraint_decl_scope import *
+from osc_parser.srunner.osc2.symbol_manager.do_directive_scope import *
+from osc_parser.srunner.osc2.symbol_manager.doMember_symbol import DoMemberSymbol
+from osc_parser.srunner.osc2.symbol_manager.enum_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.event_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.global_scope import GlobalScope
+from osc_parser.srunner.osc2.symbol_manager.inherits_condition_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.method_symbol import MethodSymbol
+from osc_parser.srunner.osc2.symbol_manager.modifier_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.parameter_symbol import ParameterSymbol
+from osc_parser.srunner.osc2.symbol_manager.physical_type_symbol import PhysicalTypeSymbol
+from osc_parser.srunner.osc2.symbol_manager.qualifiedBehavior_symbol import QualifiedBehaviorSymbol
+from osc_parser.srunner.osc2.symbol_manager.scenario_symbol import ScenarioSymbol
+from osc_parser.srunner.osc2.symbol_manager.si_exponent_symbol import (
     SiBaseExponentListScope,
     SiExpSymbol,
 )
-from srunner.osc2.symbol_manager.struct_symbol import StructSymbol
-from srunner.osc2.symbol_manager.typed_symbol import *
-from srunner.osc2.symbol_manager.unit_symbol import UnitSymbol
-from srunner.osc2.symbol_manager.variable_symbol import VariableSymbol
-from srunner.osc2.symbol_manager.wait_symbol import *
-from srunner.osc2.utils.log_manager import *
-from srunner.osc2.utils.tools import *
+from osc_parser.srunner.osc2.symbol_manager.struct_symbol import StructSymbol
+from osc_parser.srunner.osc2.symbol_manager.typed_symbol import *
+from osc_parser.srunner.osc2.symbol_manager.unit_symbol import UnitSymbol
+from osc_parser.srunner.osc2.symbol_manager.variable_symbol import VariableSymbol
+from osc_parser.srunner.osc2.symbol_manager.wait_symbol import *
+from osc_parser.srunner.osc2.utils.log_manager import *
+from osc_parser.srunner.osc2.utils.tools import *
 
 
 class ASTBuilder(OpenSCENARIO2Listener):

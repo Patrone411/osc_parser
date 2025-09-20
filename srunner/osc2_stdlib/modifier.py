@@ -1,9 +1,9 @@
 import random
 import sys
 
-from srunner.osc2_dm.physical_types import Physical
-from srunner.osc2_stdlib.misc_object import AVCarSide, ScenarioEvent
-from srunner.osc2_stdlib.vehicle import Vehicle
+from osc_parser.srunner.osc2_dm.physical_types import Physical
+from osc_parser.srunner.osc2_stdlib.misc_object import AVCarSide, ScenarioEvent
+from .vehicle import Vehicle
 
 
 class Modifier:
@@ -156,29 +156,3 @@ class AccelerationModifier(Modifier):
 
     def get_accelerate(self):
         return self.args["acceleration"]
-
-
-class FollowTrajectoryModifier(Modifier):
-    def __init__(self, actor_name: str, name: str) -> None:
-        super().__init__(actor_name, name)
-
-    def get_points(self):
-        if self.args.get("points"):
-            return self.args.get("points")
-        else:
-            return None
-
-    def get_times(self):
-        if self.args.get("times"):
-            return self.args.get("times")
-        else:
-            return None
-
-    def get_control(self):
-        if self.args.get("control"):
-            return self.args.get("control")
-        else:
-            return None
-
-    def get_trigger_point(self) -> str:
-        return self.args.get("at", "all")

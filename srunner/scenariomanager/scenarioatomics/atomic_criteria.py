@@ -22,9 +22,9 @@ import shapely.geometry
 
 import carla
 
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.timer import GameTime
-from srunner.scenariomanager.traffic_events import TrafficEvent, TrafficEventType
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.scenariomanager.traffic_events import TrafficEvent, TrafficEventType
 
 
 class Criterion(py_trees.behaviour.Behaviour):

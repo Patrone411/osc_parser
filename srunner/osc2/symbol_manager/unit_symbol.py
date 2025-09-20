@@ -1,5 +1,5 @@
-from srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from srunner.osc2.utils.log_manager import LOG_ERROR
+from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc_parser.srunner.osc2.utils.log_manager import LOG_ERROR
 
 
 class UnitSymbol(BaseSymbol):

@@ -4,20 +4,19 @@ import math
 import operator
 from typing import List, Tuple
 
-import carla
 import numpy as np
 from antlr4.CommonTokenStream import CommonTokenStream
 from antlr4.FileStream import FileStream
 from antlr4.tree.Tree import ParseTreeWalker
 from numpy.linalg import det
 
-from srunner.osc2.ast_manager.ast_builder import ASTBuilder
-from srunner.osc2.error_manager.error_listener import OscErrorListener
-from srunner.osc2.osc2_parser.OpenSCENARIO2Lexer import OpenSCENARIO2Lexer as OSC2Lexer
-from srunner.osc2.osc2_parser.OpenSCENARIO2Parser import (
+from ..osc2.ast_manager.ast_builder import ASTBuilder
+from ..osc2.error_manager.error_listener import OscErrorListener
+from ..osc2.osc2_parser.OpenSCENARIO2Lexer import OpenSCENARIO2Lexer as OSC2Lexer
+from ..osc2.osc2_parser.OpenSCENARIO2Parser import (
     OpenSCENARIO2Parser as OSC2Parser,
 )
-from srunner.osc2.osc_preprocess.pre_process import Preprocess
+from ..osc2.osc_preprocess.pre_process import Preprocess
 
 
 class OSC2Helper(object):
@@ -173,25 +172,6 @@ class OSC2Helper(object):
         return None
 
     @staticmethod
-    def euler_orientation(rotation: carla.Rotation):
-        pitch = rotation.pitch
-        yaw = rotation.yaw
-        roll = rotation.roll
-        x = math.sin(pitch / 2) * math.sin(yaw / 2) * math.cos(roll / 2) + math.cos(
-            pitch / 2
-        ) * math.cos(yaw / 2) * math.sin(roll / 2)
-        y = math.sin(pitch / 2) * math.cos(yaw / 2) * math.cos(roll / 2) + math.cos(
-            pitch / 2
-        ) * math.sin(yaw / 2) * math.sin(roll / 2)
-        z = math.cos(pitch / 2) * math.sin(yaw / 2) * math.cos(roll / 2) - math.sin(
-            pitch / 2
-        ) * math.cos(yaw / 2) * math.sin(roll / 2)
-        w = math.cos(pitch / 2) * math.cos(yaw / 2) * math.cos(roll / 2) - math.sin(
-            pitch / 2
-        ) * math.sin(yaw / 2) * math.sin(roll / 2)
-        return x, y, z, w
-
-    @staticmethod
     def flat_list(list_of_lists):
         if len(list_of_lists) == 0:
             return list_of_lists
@@ -202,11 +182,3 @@ class OSC2Helper(object):
             )
 
         return list_of_lists[:1] + OSC2Helper.flat_list(list_of_lists[1:])
-
-    @staticmethod
-    def get_init_trajectory_transform(trajectory):
-        loc_0 = carla.Location(trajectory[0][0], trajectory[0][1], trajectory[0][2])
-        loc_1 = carla.Location(trajectory[1][0], trajectory[1][1], trajectory[1][2])
-        direction = loc_1 - loc_0
-        yaw = math.degrees(math.atan2(direction.y, direction.x))
-        return carla.Transform(loc_0, carla.Rotation(yaw=yaw))

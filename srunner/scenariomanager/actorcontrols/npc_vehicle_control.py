@@ -15,9 +15,9 @@ import carla
 from agents.navigation.basic_agent import LocalPlanner
 from agents.navigation.local_planner import RoadOption
 
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.actorcontrols.basic_control import BasicControl
-from srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.actorcontrols.basic_control import BasicControl
+from osc_parser.srunner.scenariomanager.timer import GameTime
 
 
 class NpcVehicleControl(BasicControl):

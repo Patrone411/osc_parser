@@ -9,26 +9,26 @@ from typing import List, Tuple
 
 import carla
 
-import srunner.osc2_stdlib.misc_object as misc
-import srunner.osc2_stdlib.variables as variable
-import srunner.osc2_stdlib.vehicle as vehicles
-from srunner.osc2.ast_manager import ast_node
-from srunner.osc2.ast_manager.ast_vistor import ASTVisitor
-from srunner.osc2_dm.physical_object import *
-from srunner.osc2_dm.physical_types import Physical, Range
-from srunner.osc2_stdlib.path import Path
+from osc_parser.srunner.osc2_stdlib.misc_object import misc
+from osc_parser.srunner.osc2_stdlib.variables import variable
+from osc_parser.srunner.osc2_stdlib.vehicle import vehicles
+from osc_parser.srunner.osc2.ast_manager import ast_node
+from osc_parser.srunner.osc2.ast_manager.ast_vistor import ASTVisitor
+from osc_parser.srunner.osc2_dm.physical_object import *
+from osc_parser.srunner.osc2_dm.physical_types import Physical, Range
+from osc_parser.srunner.osc2_stdlib.path import Path
 
 # pylint: disable=line-too-long
-from srunner.scenarioconfigs.scenario_configuration import ScenarioConfiguration
+from osc_parser.srunner.scenarioconfigs.scenario_configuration import ScenarioConfiguration
 # '''
 # Parses the osc2 scenario description file, generates type objects in the standard
 # library based on the type and keep constraint parameters, and sets parameters
 # '''
 
 # pylint: enable=line-too-long
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 # OSC2
-from srunner.tools.osc2_helper import OSC2Helper
+from osc_parser.srunner.tools.osc2_helper import OSC2Helper
 
 vehicle_type = ["Car", "Model3", "Mkz2017", "Carlacola", "Rubicon"]
 

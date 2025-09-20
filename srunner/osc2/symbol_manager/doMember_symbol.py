@@ -1,6 +1,6 @@
-from srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from srunner.osc2.symbol_manager.behavior_symbol import BehaviorInvocationSymbol
-from srunner.osc2.symbol_manager.wait_symbol import WaitSymbol
+from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc_parser.srunner.osc2.symbol_manager.behavior_symbol import BehaviorInvocationSymbol
+from osc_parser.srunner.osc2.symbol_manager.wait_symbol import WaitSymbol
 
 
 # domember scope

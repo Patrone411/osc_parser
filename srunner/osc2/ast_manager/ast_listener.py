@@ -1,5 +1,5 @@
-import srunner.osc2.ast_manager.ast_node as ast_node
-from srunner.osc2.ast_manager.ast_node import AST
+from osc_parser.srunner.osc2.ast_manager.ast_node import ast_node
+from osc_parser.srunner.osc2.ast_manager.ast_node import AST
 
 
 class ASTListener:

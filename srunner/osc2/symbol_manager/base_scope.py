@@ -1,6 +1,6 @@
-from srunner.osc2.symbol_manager.scope import Scope
-from srunner.osc2.symbol_manager.symbol import Symbol
-from srunner.osc2.utils.log_manager import *
+from osc_parser.srunner.osc2.symbol_manager.scope import Scope
+from osc_parser.srunner.osc2.symbol_manager.symbol import Symbol
+from osc_parser.srunner.osc2.utils.log_manager import *
 
 # All symbols defined in this scope; This can include classes, functions, variables,
 # or any other symbolic impl. It does not include things that are not based on symbols

@@ -18,11 +18,11 @@ import math
 
 import carla
 
-from srunner.scenariomanager.actorcontrols.basic_control import BasicControl
-from srunner.scenariomanager.actorcontrols.visualizer import Visualizer
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.timer import GameTime
-from srunner.tools.util import strtobool
+from osc_parser.srunner.scenariomanager.actorcontrols.basic_control import BasicControl
+from osc_parser.srunner.scenariomanager.actorcontrols.visualizer import Visualizer
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.timer import GameTime
+from osc_parser.srunner.tools.util import strtobool
 
 
 class SimpleVehicleControl(BasicControl):

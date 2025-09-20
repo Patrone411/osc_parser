@@ -1,10 +1,10 @@
 import sys
 from math import sqrt
 
-from srunner.osc2_stdlib.observer import Observer
-from srunner.osc2_stdlib.variables import Variable
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import (
+from osc_parser.srunner.osc2_stdlib.observer import Observer
+from osc_parser.srunner.osc2_stdlib.variables import Variable
+from osc_parser.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from osc_parser.srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import (
     DriveDistance,
     InTriggerNearCollision,
 )

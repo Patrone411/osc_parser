@@ -1,9 +1,9 @@
 import copy
 
-from srunner.osc2.symbol_manager.local_scope import LocalScope
-from srunner.osc2.symbol_manager.symbol import Symbol
-from srunner.osc2.utils.log_manager import *
-from srunner.osc2.utils.tools import *
+from osc_parser.srunner.osc2.symbol_manager.local_scope import LocalScope
+from osc_parser.srunner.osc2.symbol_manager.symbol import Symbol
+from osc_parser.srunner.osc2.utils.log_manager import *
+from osc_parser.srunner.osc2.utils.tools import *
 
 
 class BaseSymbol(Symbol):

@@ -1,5 +1,5 @@
-from srunner.osc2.symbol_manager.argument_symbol import ArgumentSpecificationSymbol
-from srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc_parser.srunner.osc2.symbol_manager.argument_symbol import ArgumentSpecificationSymbol
+from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
 
 
 class EventSymbol(BaseSymbol):

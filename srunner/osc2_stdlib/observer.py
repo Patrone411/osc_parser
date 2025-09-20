@@ -12,7 +12,7 @@ class EventListener:
     def near_collision(self, other_car, distance):
         self.other_car = other_car
         self.distance = float(distance)
-        from srunner.osc2_stdlib.event import Event
+from osc_parser.srunner.osc2_stdlib.event import Event
 
         dis = Event.abs_distance_between_locations("ego_vehicle", "npc")
         print(other_car, dis, distance)
