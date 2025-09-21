@@ -16,7 +16,7 @@ scenario top:
         get_ahead: parallel(duration: 15s):
             ego_vehicle.move() with:
                 position([10m..20m], ahead_of: npc, at: start)
-                #lateral(2m, side: left, side_of: npc, at: start)
+                lateral(2m, side: left, side_of: npc, at: start)
                 speed(ego_start_speed)
 
 

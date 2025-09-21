@@ -17,7 +17,37 @@ from ..osc2.osc2_parser.OpenSCENARIO2Parser import (
     OpenSCENARIO2Parser as OSC2Parser,
 )
 from ..osc2.osc_preprocess.pre_process import Preprocess
+from ..osc2.validators import ActorsCollect, ActorsValidate
+from ..osc2.utils.log_manager import LOG_ERROR
 
+from antlr4.error.ErrorListener import ErrorListener
+
+class _CollectingErrorListener(ErrorListener):
+    """Counts syntax errors and logs them through LOG_ERROR."""
+    def __init__(self):
+        self.count = 0
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
+        self.count += 1
+        LOG_ERROR(msg, line=line, column=column)
+
+
+class _Reporter:
+    """Counts semantic (actor) errors and logs them."""
+    def __init__(self):
+        self.count = 0
+    def report(self, line, col, msg):
+        self.count += 1
+        LOG_ERROR(msg, line=line, column=col)
+
+def _build_ast_from_parse_tree(parse_tree):
+    """Walk the ANTLR parse tree with your ASTBuilder and return the project AST."""
+    builder = ASTBuilder()
+    walker = ParseTreeWalker()
+    walker.walk(builder, parse_tree)
+    ast_root = builder.get_ast()
+    if ast_root is None:
+        raise RuntimeError("ASTBuilder finished without producing an AST.")
+    return ast_root
 
 class OSC2Helper(object):
     osc2_file = None
@@ -27,30 +57,45 @@ class OSC2Helper(object):
 
     @classmethod
     def gen_osc2_ast(cls, osc2_file_name: str):
-        if osc2_file_name == cls.osc2_file:
+        # cache only if we actually built an AST
+        if osc2_file_name == cls.osc2_file and cls.ast_tree is not None:
             return cls.ast_tree
-        else:
-            # preprocessing
-            new_file, _ = Preprocess(osc2_file_name).import_process()
-            input_stream = FileStream(new_file, encoding="utf-8")
 
-            osc_error_listeners = OscErrorListener(input_stream)
-            lexer = OSC2Lexer(input_stream)
-            lexer.removeErrorListeners()
-            lexer.addErrorListener(osc_error_listeners)
+        # preprocessing
+        new_file, _ = Preprocess(osc2_file_name).import_process()
+        input_stream = FileStream(new_file, encoding="utf-8")
 
-            tokens = CommonTokenStream(lexer)
-            parser = OSC2Parser(tokens)
-            parser.removeErrorListeners()
-            parser.addErrorListener(osc_error_listeners)
-            parse_tree = parser.osc_file()
+        # build lexer/parser + listeners
+        lexer = OSC2Lexer(input_stream)
+        parser = OSC2Parser(CommonTokenStream(lexer))
 
-            osc2_ast_builder = ASTBuilder()
-            walker = ParseTreeWalker()
-            walker.walk(osc2_ast_builder, parse_tree)
+        osc_err = OscErrorListener(input_stream)
+        cel = _CollectingErrorListener()
+        lexer.removeErrorListeners()
+        parser.removeErrorListeners()
+        lexer.addErrorListener(osc_err)
+        parser.addErrorListener(osc_err)
+        lexer.addErrorListener(cel)
+        parser.addErrorListener(cel)
 
-            cls.ast_tree = osc2_ast_builder.get_ast()
+        parse_tree = parser.osc_file()
 
+        # abort early on syntax errors
+        if cel.count > 0 or parse_tree is None:
+            return None
+
+        # build your project AST (nodes in ast_manager.ast_node)
+        ast_root = _build_ast_from_parse_tree(parse_tree)
+
+        # (optional) keep your actor validation pass here if you still want it,
+        # but it’s not required for AST creation.
+        walker = ParseTreeWalker()
+        collector = ActorsCollect(case_insensitive=True)
+        walker.walk(collector, parse_tree)
+        validator = ActorsValidate(collector.actors, _Reporter(), case_insensitive=True)
+        walker.walk(validator, parse_tree)
+
+        cls.ast_tree = ast_root
         return cls.ast_tree
 
     @staticmethod

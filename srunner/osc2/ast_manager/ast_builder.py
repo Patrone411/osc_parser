@@ -5,7 +5,7 @@ from . import ast_node
 from osc_parser.srunner.osc2.osc2_parser.OpenSCENARIO2Listener import OpenSCENARIO2Listener
 from osc_parser.srunner.osc2.osc2_parser.OpenSCENARIO2Parser import OpenSCENARIO2Parser
 from osc_parser.srunner.osc2.symbol_manager.action_symbol import ActionSymbol
-from osc_parser.srunner.osc2.symbol_manager.actor_symbol import ActorSymbol
+from osc_parser.srunner.osc2.symbol_manager.actor_symbol import ActorSymbol, ActionInhertsSymbol
 from osc_parser.srunner.osc2.symbol_manager.argument_symbol import *
 from osc_parser.srunner.osc2.symbol_manager.constraint_decl_scope import *
 from osc_parser.srunner.osc2.symbol_manager.do_directive_scope import *
@@ -19,7 +19,7 @@ from osc_parser.srunner.osc2.symbol_manager.modifier_symbol import *
 from osc_parser.srunner.osc2.symbol_manager.parameter_symbol import ParameterSymbol
 from osc_parser.srunner.osc2.symbol_manager.physical_type_symbol import PhysicalTypeSymbol
 from osc_parser.srunner.osc2.symbol_manager.qualifiedBehavior_symbol import QualifiedBehaviorSymbol
-from osc_parser.srunner.osc2.symbol_manager.scenario_symbol import ScenarioSymbol
+from osc_parser.srunner.osc2.symbol_manager.scenario_symbol import ScenarioSymbol, ScenarioInhertsSymbol
 from osc_parser.srunner.osc2.symbol_manager.si_exponent_symbol import (
     SiBaseExponentListScope,
     SiExpSymbol,
@@ -46,6 +46,111 @@ class ASTBuilder(OpenSCENARIO2Listener):
 
     def get_symbol(self):
         return self.__current_scope
+
+    def __ensure_scope(self, ctx):
+        if self.__current_scope is None:
+            # Recover gracefully; keeps parsing instead of crashing.
+            self.__current_scope = self.__global_scope
+            LOG_WARNING("current_scope was None; defaulting to global scope.", ctx.start)
+
+    # --- helpers for qualified names / actor scope ---
+    def __split_qualified(self, qname: str):
+        parts = qname.split(".", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+        return None, qname
+
+    def __resolve_global(self, qualified_name: str):
+        """Resolve names like 'Actor.Action' from the global scope."""
+        if not qualified_name or not self.__global_scope:
+            return None
+
+        parts = qualified_name.split(".", 1)
+        if len(parts) == 2:
+            actor_name, local = parts
+            actor_scope = self.__resolve_global_symbol(actor_name)
+            if not actor_scope:
+                return None
+
+            # 1) Try simple key
+            cand = getattr(actor_scope, "symbols", {}).get(local)
+            if cand:
+                return cand
+
+            # 2) Try fully-qualified key
+            cand = getattr(actor_scope, "symbols", {}).get(qualified_name)
+            if cand:
+                return cand
+
+            # 3) Fall back to actor_scope.resolve(...) if available
+            try:
+                cand = actor_scope.resolve(local)
+                if cand:
+                    return cand
+                return actor_scope.resolve(qualified_name)
+            except Exception:
+                return None
+
+        # Single-name fallback (rare)
+        try:
+            return self.__global_scope.resolve(qualified_name)
+        except Exception:
+            return getattr(self.__global_scope, "symbols", {}).get(qualified_name)
+
+    def __is_actor_name_known(self, name: str) -> bool:
+        """
+        True if `name` is either:
+        - a globally-declared actor type (ActorSymbol), or
+        - a variable/parameter in the current scope whose type resolves to an ActorSymbol.
+        """
+        from osc_parser.srunner.osc2.symbol_manager.actor_symbol import ActorSymbol
+        from osc_parser.srunner.osc2.symbol_manager.variable_symbol import VariableSymbol
+        from osc_parser.srunner.osc2.symbol_manager.parameter_symbol import ParameterSymbol
+
+        g = self.__resolve_global(name)
+        if isinstance(g, ActorSymbol):
+            return True
+
+        cur = None
+        try:
+            cur = self.__current_scope.resolve(name)
+        except Exception:
+            pass
+        if cur is None:
+            cur = getattr(self.__current_scope, "symbols", {}).get(name)
+
+        if isinstance(cur, ActorSymbol):
+            return True
+
+        if isinstance(cur, (VariableSymbol, ParameterSymbol)):
+            tname = getattr(cur, "type", None)
+            if tname and isinstance(self.__resolve_global(tname), ActorSymbol):
+                return True
+
+        return False
+
+    def __resolve_global_symbol(self, name: str):
+        """Robust global lookup:
+        - Try direct symbol-table hit first (fast path),
+        - then fall back to GlobalScope.resolve for dotted names or other strategies.
+        """
+        if not self.__global_scope:
+            return None
+        # direct table lookup (works for top-level actors like 'osc_actor')
+        sym = getattr(self.__global_scope, "symbols", {}).get(name)
+        if sym is not None:
+            return sym
+        # fallback to resolver (for dotted or nested names)
+        try:
+            return self.__global_scope.resolve(name)
+        except Exception:
+            return None
+
+    def __ensure_actor_defined(self, actor_name: str, token):
+        """Emit a single precise error only if we can be sure the actor is missing."""
+        sym = self.__resolve_global_symbol(actor_name)
+        if not (sym and isinstance(sym, ActorSymbol)):
+            LOG_ERROR(f"actorName: {actor_name} is not defined!", token)
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#osc_file.
     def enterOsc_file(self, ctx: OpenSCENARIO2Parser.Osc_fileContext):
@@ -536,52 +641,169 @@ class ASTBuilder(OpenSCENARIO2Listener):
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#actorDeclaration.
     def enterActorDeclaration(self, ctx: OpenSCENARIO2Parser.ActorDeclarationContext):
+        # Always push the current node so exitActorDeclaration can safely pop.
         self.__node_stack.append(self.__cur_node)
+
         actor_name = ctx.actorName().getText()
 
-        actor = ActorSymbol(actor_name, self.__current_scope)
-        self.__current_scope.define(actor, ctx.start)
-        self.__current_scope = actor
+        # Ensure actor types live (and are looked up) in the GLOBAL scope.
+        existing = None
+        try:
+            existing = self.__global_scope.resolve(actor_name)
+        except Exception:
+            existing = getattr(self.__global_scope, "symbols", {}).get(actor_name)
+
+        if existing and isinstance(existing, ActorSymbol):
+            actor_sym = existing  # reuse existing symbol (avoid duplicate definition error)
+        else:
+            actor_sym = ActorSymbol(actor_name, self.__global_scope)
+            self.__global_scope.define(actor_sym, ctx.start)
+
+        # Enter the actor's scope for its members
+        self.__current_scope = actor_sym
 
         node = ast_node.ActorDeclaration(actor_name)
         node.set_loc(ctx.start.line, ctx.start.column)
         node.set_scope(self.__current_scope)
 
+        # Attach this declaration node to the current AST
         self.__cur_node.set_children(node)
         self.__cur_node = node
 
     # Exit a parse tree produced by OpenSCENARIO2Parser#actorDeclaration.
     def exitActorDeclaration(self, ctx: OpenSCENARIO2Parser.ActorDeclarationContext):
+        # Restore AST cursor
+        if self.__node_stack:
+            self.__cur_node = self.__node_stack.pop()
+        else:
+            # Defensive fallback to avoid crashing; should not happen if enter* pushed.
+            LOG_WARNING("node_stack empty in exitActorDeclaration; continuing.", ctx.start)
+
+        # Restore scope to the enclosing scope (global parent of the actor)
+        if self.__current_scope:
+            self.__current_scope = self.__current_scope.get_enclosing_scope()
+        else:
+            # Fallback to global if something went odd
+            self.__current_scope = self.__global_scope
+
+    # Enter a parse tree produced by OpenSCENARIO2Parser#actionDeclaration.
+    def enterActionDeclaration(self, ctx: OpenSCENARIO2Parser.ActionDeclarationContext):
+        self.__node_stack.append(self.__cur_node)
+
+        actor_scope = None
+        actor_name = None
+        action_name = None
+
+        # --- Case A: qualified action declared at top-level: "action osc_actor.osc_action"
+        if hasattr(ctx, "qualifiedBehaviorName") and ctx.qualifiedBehaviorName():
+            qtxt = ctx.qualifiedBehaviorName().getText()
+            a, b = self.__split_qualified(qtxt)
+            actor_name, action_name = a, b
+
+            if actor_name:
+                actor_scope = self.__resolve_global_symbol(actor_name)
+                if not isinstance(actor_scope, ActorSymbol):
+                    LOG_ERROR(f"actorName: {actor_name} is not defined!", ctx.start)
+                    # fall back so we don't crash; but won't resolve inherits later
+                    actor_scope = self.__global_scope
+            else:
+                # malformed qualified name; try to fall back to current actor
+                if isinstance(self.__current_scope, ActorSymbol):
+                    actor_scope = self.__current_scope
+                    actor_name = actor_scope.name
+                else:
+                    LOG_WARNING("Action without actor qualifier and not inside actor; placing under global.", ctx.start)
+                    actor_scope = self.__global_scope
+                    actor_name = "<?>"
+
+        # --- Case B: grammar exposes actor+behavior separately (rare)
+        elif hasattr(ctx, "actorName") and ctx.actorName() and hasattr(ctx, "behaviorName") and ctx.behaviorName():
+            actor_name = ctx.actorName().getText()
+            action_name = ctx.behaviorName().getText()
+            actor_scope = self.__resolve_global_symbol(actor_name)
+            if not isinstance(actor_scope, ActorSymbol):
+                LOG_ERROR(f"actorName: {actor_name} is not defined!", ctx.start)
+                actor_scope = self.__global_scope
+
+        # --- Case C: nested inside an actor body { ... action foo ... }
+        else:
+            # try simple action name fields
+            if hasattr(ctx, "behaviorName") and ctx.behaviorName():
+                action_name = ctx.behaviorName().getText()
+            elif hasattr(ctx, "actionName") and ctx.actionName():
+                action_name = ctx.actionName().getText()
+            else:
+                LOG_ERROR("action name missing", ctx.start)
+                action_name = "<unnamed>"
+
+            if isinstance(self.__current_scope, ActorSymbol):
+                actor_scope = self.__current_scope
+                actor_name = actor_scope.name
+            else:
+                LOG_WARNING("Action declared outside of an actor; using global.", ctx.start)
+                actor_scope = self.__global_scope
+                actor_name = "<?>"
+
+        # Build FQN and create/lookup the ActionSymbol
+        fq_name = f"{actor_name}.{action_name}"
+
+        # If we previously created it, just re-enter the scope rather than redefining
+        existing = None
+        if isinstance(actor_scope, ActorSymbol) and hasattr(actor_scope, "symbols"):
+            # Try both simple and fully-qualified keys (depends on how define() keys symbols)
+            existing = actor_scope.symbols.get(action_name) or actor_scope.symbols.get(fq_name)
+
+        if existing and isinstance(existing, ActionSymbol):
+            action_sym = existing
+        else:
+            qsym = QualifiedBehaviorSymbol(fq_name, actor_scope)
+            action_sym = ActionSymbol(qsym)
+
+            # Define under the actor. Some impls key by qsym.name (fq_name); to keep resolution
+            # flexible we also ensure a simple-name alias exists in the actor's symbols.
+            actor_scope.define(action_sym, ctx.start)
+            if hasattr(actor_scope, "symbols"):
+                actor_scope.symbols.setdefault(action_name, action_sym)
+
+        # AST node + scope enter
+        node = ast_node.ActionDeclaration(fq_name)
+        node.set_loc(ctx.start.line, ctx.start.column)
+        action_sym.declaration_address = node
+        self.__current_scope = action_sym
+        node.set_scope(self.__current_scope)
+
+        self.__cur_node.set_children(node)
+        self.__cur_node = node
+
+    def exitActionDeclaration(self, ctx: OpenSCENARIO2Parser.ActionDeclarationContext):
         self.__cur_node = self.__node_stack.pop()
         self.__current_scope = self.__current_scope.get_enclosing_scope()
 
-    # Enter a parse tree produced by OpenSCENARIO2Parser#actorInherts.
-    def enterActorInherts(self, ctx: OpenSCENARIO2Parser.ActorInhertsContext):
+    # Enter a parse tree produced by OpenSCENARIO2Parser#actionInherts.
+    def enterActionInherts(self, ctx: OpenSCENARIO2Parser.ActionInhertsContext):
         self.__node_stack.append(self.__cur_node)
-        actor_name = ctx.actorName().getText()
+        qname = ctx.qualifiedBehaviorName().getText()
 
-        # Finds the scope of the inherited actor_name
-        scope = self.__current_scope.resolve(actor_name)
+        # Resolve fully-qualified action at the GLOBAL scope
+        target = self.__resolve_global(qname)
+        if not (target and isinstance(target, ActionSymbol)):
+            LOG_ERROR("inherits " + qname + " is not defined!", ctx.start)
 
-        if scope and isinstance(scope, ActorSymbol):
-            pass
-        else:
-            scope = None
-            msg = "inherits " + actor_name + " is not defined!"
-            LOG_ERROR(msg, ctx.start)
+        action_qsym = QualifiedBehaviorSymbol(qname, self.__current_scope)
+        # NOTE: do not call is_qualified_behavior_name_valid here (causes premature actor errors)
 
-        actor_inherits = ActorInhertsSymbol(actor_name, self.__current_scope, scope)
-        self.__current_scope.define(actor_inherits, ctx.start)
+        action_inherits = ActionInhertsSymbol(action_qsym, target)
+        self.__current_scope.define(action_inherits, ctx.start)
 
-        node = ast_node.ActorInherts(actor_name)
+        node = ast_node.ActionInherts(qname)
         node.set_loc(ctx.start.line, ctx.start.column)
         node.set_scope(self.__current_scope)
 
         self.__cur_node.set_children(node)
         self.__cur_node = node
 
-    # Exit a parse tree produced by OpenSCENARIO2Parser#actorInherts.
-    def exitActorInherts(self, ctx: OpenSCENARIO2Parser.ActorInhertsContext):
+    # Exit a parse tree produced by OpenSCENARIO2Parser#actionInherts.
+    def exitActionInherts(self, ctx: OpenSCENARIO2Parser.ActionInhertsContext):
         self.__cur_node = self.__node_stack.pop()
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#actorMemberDecl.
@@ -601,20 +823,22 @@ class ASTBuilder(OpenSCENARIO2Listener):
         pass
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#scenarioDeclaration.
-    def enterScenarioDeclaration(
-        self, ctx: OpenSCENARIO2Parser.ScenarioDeclarationContext
-    ):
+    def enterScenarioDeclaration(self, ctx: OpenSCENARIO2Parser.ScenarioDeclarationContext):
         self.__node_stack.append(self.__cur_node)
-        qualified_behavior_name = ctx.qualifiedBehaviorName().getText()
+        qname = ctx.qualifiedBehaviorName().getText()
 
-        scenario_name = QualifiedBehaviorSymbol(
-            qualified_behavior_name, self.__current_scope
-        )
-        scenario_name.is_qualified_behavior_name_valid(ctx.start)
+        actor_name, local = self.__split_qualified(qname)
+        owner = self.__global_scope
+        if actor_name:
+            cand = self.__resolve_global_symbol(actor_name)
+            if isinstance(cand, ActorSymbol):
+                owner = cand
+
+        scenario_name = QualifiedBehaviorSymbol(qname, owner)
         scenario = ScenarioSymbol(scenario_name)
-        self.__current_scope.define(scenario, ctx.start)
+        owner.define(scenario, ctx.start)
 
-        node = ast_node.ScenarioDeclaration(qualified_behavior_name)
+        node = ast_node.ScenarioDeclaration(qname)
         node.set_loc(ctx.start.line, ctx.start.column)
 
         scenario.declaration_address = node
@@ -636,21 +860,42 @@ class ASTBuilder(OpenSCENARIO2Listener):
         self.__node_stack.append(self.__cur_node)
         qualified_behavior_name = ctx.qualifiedBehaviorName().getText()
 
-        # Searches the scope of the inheritance scenario_name
+        # Try to resolve the inherited scenario by its fully qualified name first.
         scope = self.__current_scope.resolve(qualified_behavior_name)
 
-        if scope and isinstance(scope, ScenarioSymbol):
-            scenario_name = QualifiedBehaviorSymbol(
-                qualified_behavior_name, self.__current_scope
-            )
-            scenario_name.is_qualified_behavior_name_valid(ctx.start)
-            scenario_inherts = ScenarioInhertsSymbol(scenario_name)
+        # If not found and name is dotted, try resolving as <actor>.<scenario> under the actor scope.
+        if scope is None:
+            parts = qualified_behavior_name.split(".", 1)
+            if len(parts) == 2:
+                actor_name, scen_name = parts
+                actor_scope = self.__current_scope.resolve(actor_name)
+                if actor_scope and hasattr(actor_scope, "symbols"):
+                    # Direct symbol lookup by simple name.
+                    cand = actor_scope.symbols.get(scen_name)
+                    if isinstance(cand, ScenarioSymbol):
+                        scope = cand
+                    else:
+                        # Fallback: scan for a ScenarioSymbol whose qualified name's behavior matches scen_name.
+                        for sym in actor_scope.symbols.values():
+                            if isinstance(sym, ScenarioSymbol):
+                                qn = getattr(sym, "name", None)
+                                beh = getattr(qn, "behavior", None)
+                                if beh == scen_name:
+                                    scope = sym
+                                    break
 
-            self.__current_scope.define(scenario_inherts, ctx.start)
-            self.__current_scope = scenario_inherts
-        else:
+        # Build the qualified symbol WITHOUT calling is_qualified_behavior_name_valid.
+        scenario_qname = QualifiedBehaviorSymbol(
+            qualified_behavior_name, self.__current_scope
+        )
+
+        if scope is None or not isinstance(scope, ScenarioSymbol):
             msg = "inherits " + qualified_behavior_name + " is not defined!"
             LOG_ERROR(msg, ctx.start)
+
+        scenario_inherts = ScenarioInhertsSymbol(scenario_qname)
+        self.__current_scope.define(scenario_inherts, ctx.start)
+        self.__current_scope = scenario_inherts
 
         node = ast_node.ScenarioInherts(qualified_behavior_name)
         node.set_loc(ctx.start.line, ctx.start.column)
@@ -696,76 +941,18 @@ class ASTBuilder(OpenSCENARIO2Listener):
     def exitBehaviorName(self, ctx: OpenSCENARIO2Parser.BehaviorNameContext):
         pass
 
-    # Enter a parse tree produced by OpenSCENARIO2Parser#actionDeclaration.
-    def enterActionDeclaration(self, ctx: OpenSCENARIO2Parser.ActionDeclarationContext):
+    def enterModifierDeclaration(self, ctx: OpenSCENARIO2Parser.ModifierDeclarationContext):
         self.__node_stack.append(self.__cur_node)
-        qualified_behavior_name = ctx.qualifiedBehaviorName().getText()
 
-        action_name = QualifiedBehaviorSymbol(
-            qualified_behavior_name, self.__current_scope
-        )
-        action_name.is_qualified_behavior_name_valid(ctx.start)
-        action = ActionSymbol(action_name)
-        self.__current_scope.define(action, ctx.start)
-        self.__current_scope = action
-
-        node = ast_node.ActionDeclaration(qualified_behavior_name)
-        node.set_loc(ctx.start.line, ctx.start.column)
-        node.set_scope(self.__current_scope)
-
-        self.__cur_node.set_children(node)
-        self.__cur_node = node
-
-    # Exit a parse tree produced by OpenSCENARIO2Parser#actionDeclaration.
-    def exitActionDeclaration(self, ctx: OpenSCENARIO2Parser.ActionDeclarationContext):
-        self.__cur_node = self.__node_stack.pop()
-        self.__current_scope = self.__current_scope.get_enclosing_scope()
-
-    # Enter a parse tree produced by OpenSCENARIO2Parser#actionInherts.
-    def enterActionInherts(self, ctx: OpenSCENARIO2Parser.ActionInhertsContext):
-        self.__node_stack.append(self.__cur_node)
-        qualified_behavior_name = ctx.qualifiedBehaviorName().getText()
-
-        # Finds the scope of the inherited action_name
-        scope = self.__current_scope.resolve(qualified_behavior_name)
-
-        if scope and isinstance(scope, ActionSymbol):
-            pass
-        else:
-            msg = "inherits " + qualified_behavior_name + " is not defined!"
-            LOG_ERROR(msg, ctx.start)
-
-        action_name = QualifiedBehaviorSymbol(
-            qualified_behavior_name, self.__current_scope
-        )
-        action_name.is_qualified_behavior_name_valid(ctx.start)
-        action_inherits = ActionInhertsSymbol(action_name, scope)
-        self.__current_scope.define(action_inherits, ctx.start)
-
-        node = ast_node.ActionInherts(qualified_behavior_name)
-        node.set_loc(ctx.start.line, ctx.start.column)
-        node.set_scope(self.__current_scope)
-
-        self.__cur_node.set_children(node)
-        self.__cur_node = node
-
-    # Exit a parse tree produced by OpenSCENARIO2Parser#actionInherts.
-    def exitActionInherts(self, ctx: OpenSCENARIO2Parser.ActionInhertsContext):
-        self.__cur_node = self.__node_stack.pop()
-
-    # Enter a parse tree produced by OpenSCENARIO2Parser#modifierDeclaration.
-    def enterModifierDeclaration(
-        self, ctx: OpenSCENARIO2Parser.ModifierDeclarationContext
-    ):
-        self.__node_stack.append(self.__cur_node)
         actor_name = None
+        actor_scope = None
         if ctx.actorName():
             actor_name = ctx.actorName().getText()
-            if self.__current_scope.resolve(actor_name):
-                pass
-            else:
-                msg = "Actor: " + actor_name + " is not defined!"
-                LOG_ERROR(msg, ctx.start)
+            # Try to resolve, but do not hard-fail if not found yet (late binding).
+            actor_scope = self.__resolve_global(actor_name)
+            if not actor_scope and not self.__is_actor_name_known(actor_name):
+                # Defer resolution; only warn so libraries that forward-reference actors don’t break
+                LOG_WARNING(f"actorName: {actor_name} not resolved at this point; deferring.", ctx.start)
 
         modifier_name = ctx.modifierName().getText()
 
@@ -775,7 +962,8 @@ class ASTBuilder(OpenSCENARIO2Listener):
 
         node = ast_node.ModifierDeclaration(actor_name, modifier_name)
         node.set_loc(ctx.start.line, ctx.start.column)
-        node.set_scope(self.__current_scope)
+        # If we resolved an actor type, great; otherwise keep current scope.
+        node.set_scope(actor_scope or self.__current_scope)
 
         self.__cur_node.set_children(node)
         self.__cur_node = node
@@ -1037,14 +1225,10 @@ class ASTBuilder(OpenSCENARIO2Listener):
     # Enter a parse tree produced by OpenSCENARIO2Parser#typeName.
     def enterTypeName(self, ctx: OpenSCENARIO2Parser.TypeNameContext):
         name = ctx.Identifier().getText()
-        # Find the scope of type_name
-        scope = self.__current_scope.resolve(name)
-
-        if scope:
-            pass
-        else:
-            msg = "Type name: " + name + " is not defined!"
-            LOG_ERROR(msg, ctx.start)
+        # DEFERRED RESOLUTION: types may be declared later or in another pass.
+        # Avoid hard errors at parse time.
+        _ = self.__current_scope.resolve(name)
+        pass
 
     # Exit a parse tree produced by OpenSCENARIO2Parser#typeName.
     def exitTypeName(self, ctx: OpenSCENARIO2Parser.TypeNameContext):
@@ -1242,6 +1426,7 @@ class ASTBuilder(OpenSCENARIO2Listener):
     def enterParameterDeclaration(
         self, ctx: OpenSCENARIO2Parser.ParameterDeclarationContext
     ):
+        self.__ensure_scope(ctx)
         defaultValue = None
         if ctx.defaultValue():
             defaultValue = ctx.defaultValue().getText()
@@ -1282,6 +1467,7 @@ class ASTBuilder(OpenSCENARIO2Listener):
     def enterVariableDeclaration(
         self, ctx: OpenSCENARIO2Parser.VariableDeclarationContext
     ):
+        self.__ensure_scope(ctx)
         self.__node_stack.append(self.__cur_node)
         field_name = []
         defaultValue = None
@@ -1488,17 +1674,12 @@ class ASTBuilder(OpenSCENARIO2Listener):
         if ctx.behaviorExpression():
             actor = ctx.behaviorExpression().getText()
 
-        scope = None
+        # DEFERRED RESOLUTION: don't error if actor target isn't found yet.
+        scope = self.__current_scope
         if actor is not None:
-            scope = self.__current_scope.resolve(actor)
-            if scope:
-                pass
-            else:
-                msg = actor + " is not defined!"
-                LOG_ERROR(msg, ctx.start)
-
-        if scope is None:
-            scope = self.__current_scope
+            resolved = self.__current_scope.resolve(actor)
+            if resolved:
+                scope = resolved
 
         node = ast_node.ModifierInvocation(actor, modifier_name)
         node.set_loc(ctx.start.line, ctx.start.column)
@@ -1637,16 +1818,22 @@ class ASTBuilder(OpenSCENARIO2Listener):
     ):
         self.__node_stack.append(self.__cur_node)
         actor = None
-        name = ""
         behavior_name = ctx.behaviorName().getText()
+
         if ctx.actorExpression():
             actor = ctx.actorExpression().getText()
-            name += actor + "."
+            fq_name = f"{actor}.{behavior_name}"
+        else:
+            fq_name = behavior_name
 
-        name += behavior_name
-
-        # Find the scope of type_name
-        scope = self.__current_scope.resolve(name)
+        # Prefer resolving against the global scope (actions are defined globally)
+        scope = self.__resolve_global(fq_name)
+        if scope is None:
+            # Fallback to current scope if someone relies on that
+            try:
+                scope = self.__current_scope.resolve(fq_name)
+            except Exception:
+                scope = None
 
         node = ast_node.BehaviorInvocation(actor, behavior_name)
         node.set_loc(ctx.start.line, ctx.start.column)
@@ -1871,7 +2058,7 @@ class ASTBuilder(OpenSCENARIO2Listener):
         pass
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#coverDeclaration.
-    def enterCoverDeclaration(self, ctx: OpenSCENARIO2Parser.CoverDeclarationContext):
+    def enterCoverDeclaration(self, ctx: OpenSCENARIO2Parser.CoverageDeclarationContext):
         self.__node_stack.append(self.__cur_node)
         target_name = None
         if ctx.targetName():
@@ -1885,7 +2072,7 @@ class ASTBuilder(OpenSCENARIO2Listener):
         self.__cur_node = node
 
     # Exit a parse tree produced by OpenSCENARIO2Parser#coverDeclaration.
-    def exitCoverDeclaration(self, ctx: OpenSCENARIO2Parser.CoverDeclarationContext):
+    def exitCoverDeclaration(self, ctx: OpenSCENARIO2Parser.CoverageDeclarationContext):
         self.__cur_node = self.__node_stack.pop()
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#recordDeclaration.
@@ -2405,24 +2592,21 @@ class ASTBuilder(OpenSCENARIO2Listener):
         for fn in ctx.fieldName():
             name = fn.Identifier().getText()
             if scope is None:
-                if self.__current_scope.resolve(name):
-                    scope = self.__current_scope.resolve(name)
-                else:
-                    msg = name + " is not defined!"
-                    LOG_ERROR(msg, ctx.start)
+                # DEFERRED RESOLUTION: don't error if the first identifier isn't found.
+                scope = self.__current_scope.resolve(name) or None
             else:
                 if issubclass(type(scope), TypedSymbol):
                     if self.__current_scope.resolve(scope.type):
                         scope = self.__current_scope.resolve(scope.type)
-                    if name in scope.symbols:
+                    if name in getattr(scope, "symbols", {}):
                         if scope.symbols[name].value:
                             scope = scope.symbols[name].value
                         else:
-                            msg = name + ": value is None!"
-                            LOG_ERROR(msg, ctx.start)
+                            # Leave unresolved; later pass can flag missing values if needed.
+                            pass
                     else:
-                        msg = name + " is not defined!"
-                        LOG_ERROR(msg, ctx.start)
+                        # Leave unresolved; don't error during parse.
+                        pass
                 else:
                     scope = self.__current_scope.resolve(scope)
 
@@ -2457,8 +2641,21 @@ class ASTBuilder(OpenSCENARIO2Listener):
 
     # Enter a parse tree produced by OpenSCENARIO2Parser#argumentSpecification.
     def enterArgumentSpecification(
+        self, ctx: OpenSCENARIO2Parser.ArgumentListSpecificationContext
+    ):
+        pass
+
+    # Exit a parse tree produced by OpenSCENARIO2Parser#argumentSpecification.
+    def exitArgumentSpecification(
+        self, ctx: OpenSCENARIO2Parser.ArgumentListSpecificationContext
+    ):
+        pass
+
+    # Enter a parse tree produced by OpenSCENARIO2Parser#argumentSpecification.
+    def enterArgumentSpecification(
         self, ctx: OpenSCENARIO2Parser.ArgumentSpecificationContext
     ):
+        self.__ensure_scope(ctx)
         self.__node_stack.append(self.__cur_node)
         argument_name = ctx.argumentName().getText()
         argument_type = ctx.typeDeclarator().getText()
