@@ -5,7 +5,6 @@ class MiniOSC2ScenarioConfig:
     def __init__(self, filename):
         self.filename = filename
         self.ast_tree = OSC2Helper.gen_osc2_ast(self.filename)
-
         # Required attributes accessed by ConfigInit
         self.variables = {}
         self.unit_dict = {}

@@ -409,190 +409,49 @@ class ConfigInit(ASTVisitor):
     def visit_behavior_invocation(self, node: ast_node.BehaviorInvocation):
         actor = node.actor
         behavior = node.behavior_name
-        if debug: print(f"[Behavior] {actor}.{behavior}")
-        # Ensure the actor entry exists
-        if actor not in self.current_block["actors"]:
-            self.current_block["actors"][actor] = {
-                "action": None,
-                "args"  : None,
-                "target": None,
-                "modifiers": []
-            }
-        self.current_block["actors"][actor]["action"] = behavior
-        
-        position_args = []
-        keyword_args = {}
-        #if behavior in ["drive", "follow lane", "change lane"]: TODO add diffrent handlers for diffrent vehicle movement types
+        if debug:
+            print(f"[Behavior] {actor}.{behavior}")
+
+        # Keep the lightweight debug block if you still use current_block
+        if self.current_block is not None:
+            if actor not in self.current_block["actors"]:
+                self.current_block["actors"][actor] = {
+                    "action": None,
+                    "args": None,
+                    "target": None,
+                    "modifiers": []  # leave empty in Pass 1
+                }
+            self.current_block["actors"][actor]["action"] = behavior
+
+        # Collect args (do NOT interpret modifiers here)
+        pos_args = []
+        kw_args = {}
+
         for child in node.get_children():
             if isinstance(child, ast_node.PositionalArgument):
                 arg = self.visit_positional_argument(child)
-                position_args.append(arg)
-                self.current_block["actors"][actor]["args"] = arg
-
-
-            '''if isinstance(child, ast_node.ModifierInvocation):
-                self.visit(child)'''
-
-            if isinstance(child, ast_node.ModifierInvocation):
-                    modifier_invocation_no_occur = False
-                    modifier = self.visit_modifier_invocation(child)
-                    modifier_name = modifier[0]
-                    arguments = modifier[1]
-
-                    if modifier_name == "speed":
-                        modifier_ins = SpeedModifier(actor, modifier_name)
-                        keyword_args = {}
-
-                        # 'arguments' should already be resolved by visit_modifier_invocation
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                elif isinstance(arg, Physical):
-                                    keyword_args["speed"] = arg
-                                else:
-                                    # allow plain numbers, etc.
-                                    keyword_args["speed"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["speed"] = arguments
-                        else:
-                            # allow resolved scalar (e.g., float) or already-gen'd physical value
-                            keyword_args["speed"] = arguments
-
-                        # unwrap ranges if present
-                        speed_val = keyword_args.get("speed", None)
-                        if isinstance(speed_val, Physical) and isinstance(speed_val.num, Range):
-                            start_val = Physical(int(speed_val.num.start), speed_val.unit)
-                            end_val   = Physical(int(speed_val.num.end),   speed_val.unit)
-                            self.current_block["actors"][actor]["modifiers"].append(
-                                {"speed": (start_val.gen_physical_value(), end_val.gen_physical_value())}
-                            )
-                        elif isinstance(speed_val, Physical):
-                            self.current_block["actors"][actor]["modifiers"].append(
-                                {"speed": speed_val.gen_physical_value()}
-                            )
-                        else:
-                            # already numeric or converted – pass through
-                            self.current_block["actors"][actor]["modifiers"].append({"speed": speed_val})
-
-                        modifier_ins.set_args(keyword_args)
-
-
-                    elif modifier_name == "position":
-                        modifier_ins = PositionModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                elif isinstance(arg, Physical):
-                                    keyword_args["distance"] = arg.gen_physical_value()
-                                else:
-                                    keyword_args["distance"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["distance"] = arguments.gen_physical_value()  # <-- was 'arg'
-                        else:
-                            keyword_args["distance"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-                    elif modifier_name == "lane":
-                        modifier_ins = LaneModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                else:
-                                    keyword_args["lane"] = str(arg)
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        else:
-                            keyword_args["lane"] = str(arguments)
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    elif modifier_name == "acceleration":
-                        modifier_ins = AccelerationModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                else:
-                                    keyword_args["acceleration"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        else:
-                            keyword_args["acceleration"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    elif modifier_name == "keep_lane":
-                        # self.__cur_behavior.add_child(behavior)
-                        if debug: print("Target keep lane.")
-
-                    # change_speed
-                    elif modifier_name == "change_speed":
-                        modifier_ins = ChangeSpeedModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["change_speed"] = arguments.gen_physical_value()
-                        else:
-                            keyword_args["change_speed"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    # change_lane
-                    elif modifier_name == "change_lane":
-                        modifier_ins = ChangeLaneModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, (list, tuple)):
-                            args_list = list(arguments)
-                            if len(args_list) == 1:
-                                keyword_args["side"] = args_list[0]
-                            elif len(args_list) == 2:
-                                a0, a1 = args_list
-                                if isinstance(a0, tuple):
-                                    keyword_args[a0[0]] = str(a0[1])
-                                else:
-                                    keyword_args["lane_changes"] = str(a0)
-                                if isinstance(a1, tuple):
-                                    keyword_args[a1[0]] = a1[1]
-                                else:
-                                    keyword_args["side"] = a1
-                            else:
-                                return f"Needed 2 arguments, but given {len(args_list)} arguments."
-                        else:
-                            keyword_args["side"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-                        
-                    else:
-                        raise NotImplementedError(
-                            f"no implentment function: {modifier_name}"
-                        )
-
-
-
+                pos_args.append(arg)
             elif isinstance(child, ast_node.NamedArgument):
-                key, value = self.visit_named_argument(child)
-                keyword_args[key] = value
-        for arg in position_args:#TODO add parsing for modifiers in positional args
-            if debug: print(f"[Positional Arg:] {arg}")
+                k, v = self.visit_named_argument(child)
+                kw_args[k] = v
+            elif isinstance(child, ast_node.ModifierInvocation):
+                # Only allow side-effectful target calls (e.g., path.min_lanes()).
+                # Do not try to interpret/structure modifiers in Pass 1.
+                self.visit_modifier_invocation(child)
+            else:
+                # Future-proof: visit unknown children if needed
+                if hasattr(child, "accept"):
+                    child.accept(self)
+
+        # Store raw args for debugging only (optional)
+        if self.current_block is not None:
+            if pos_args and not kw_args and len(pos_args) == 1:
+                self.current_block["actors"][actor]["args"] = pos_args[0]
+            elif not pos_args and kw_args:
+                self.current_block["actors"][actor]["args"] = kw_args
+            else:
+                combined = list(pos_args) + [(k, v) for k, v in kw_args.items()]
+                self.current_block["actors"][actor]["args"] = combined
 
     
     def visit_positional_argument(self, node: ast_node.PositionalArgument):
@@ -848,8 +707,16 @@ class ConfigInit(ASTVisitor):
                 stack.append(token)
         return stack.pop()
 
-    def visit_named_argument(self, node: ast_node.NamedArgument):
-        return node.argument_name, self.visit_children(node)
+    def visit_named_argument(self, node):
+        """
+        Safely evaluate a NamedArgument's value (which may be a primitive or AST),
+        unwrap singletons, and resolve variable references.
+        Returns: (name, value)
+        """
+        val = self.visit_children(node)  # already handles AST vs primitives
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
+        return node.argument_name, self._resolve_vars(val)
 
     def visit_range_expression(self, node: ast_node.RangeExpression):
         start, end = self.visit_children(node)
