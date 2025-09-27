@@ -5,14 +5,6 @@ from .srunner.osc2_dm.physical_object import *
 from .srunner.osc2_dm.physical_types import Physical, Range
 from .srunner.osc2.ast_manager import ast_node
 from .srunner.tools.osc2_helper import OSC2Helper
-from .srunner.osc2_stdlib.modifier import(
-    AccelerationModifier,
-    ChangeLaneModifier,
-    ChangeSpeedModifier,
-    LaneModifier,
-    PositionModifier,
-    SpeedModifier,
-)
 from .srunner.osc2.ast_manager.ast_vistor import ASTVisitor
 from .utils import flat_list
 

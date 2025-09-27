@@ -2,6 +2,10 @@ from . import MiniOSC2ScenarioConfig, ConfigInit, print_pytree, pytree_to_actor_
 from .pytree.ir_lowering import IRLowering
 from .pytree.print_tree import print_ir
 
+from osc_parser.srunner.osc2.semantics.registry import SemanticsRegistry
+from osc_parser.srunner.osc2.semantics.validator import SemanticValidator
+from osc_parser.srunner.osc2.semantics.ir_adapter import validate_from_ir
+
 PREFIX = "osc_parser/osc/"
 osc_file = "test.osc"
 
@@ -50,6 +54,23 @@ def check_namespace_collisions(ast_root, pass1):
         elif isinstance(c, ast_node.ModifierDeclaration):
             buckets["modifier"].add(_name_of(getattr(c, "modifier_name", None)))
 
+    print("units: ")
+    units = buckets.get("unit", set())
+    if not units:
+        print("(no modifiers found)")
+    else:
+        for name in sorted(units):
+            print(name)
+
+    print("physical_types: ")
+    physical_types= buckets.get("physical_types", set())
+    if not physical_types:
+        print("(no modifiers found)")
+    else:
+        for name in sorted(physical_types):
+            print(name)
+
+
     # Build name -> kinds map
     name_to_kinds = {}
     for kind, names in buckets.items():
@@ -78,8 +99,14 @@ lower = IRLowering(config, actor_registry=pass1.actor_registry, entry_names={"to
 scenarios = lower.lower(config.ast_tree)
 print_ir(scenarios)
 
+# Load registry + validator (optionally pass a better type hook)
+REGISTRY_PATH = "osc_parser/srunner/osc2/semantics/osc_semantics_registry.json"
+sem_registry = SemanticsRegistry.from_file(REGISTRY_PATH)
+validator    = SemanticValidator(sem_registry)  # or with a type hook
 
-
+# Validate semantics using the IR
+validate_from_ir(scenarios, validator)
+print("Semantic validation completed.")
 
 
 """

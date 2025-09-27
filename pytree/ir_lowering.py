@@ -334,13 +334,15 @@ class IRLowering(ASTVisitor):
 
     # Map a modifier invocation to (name, list-of-args/tuples)
     def _lower_modifier_invocation(self, node):
-        name = MOD_ALIAS.get(node.modifier_name, node.modifier_name)
+        name = node.modifier_name
+        #name = MOD_ALIAS.get(node.modifier_name, node.modifier_name)
+
         args_raw = []
         for ch in node.get_children():
             if isinstance(ch, ast_node.PositionalArgument):
                 args_raw.append(ch.accept(self))
             elif isinstance(ch, ast_node.NamedArgument):
                 k, v = self.visit_named_argument(ch)
-                k = KW_ALIAS.get(k, k)
+                #k = KW_ALIAS.get(k, k)
                 args_raw.append((k, v))
         return name, args_raw
