@@ -34,6 +34,12 @@ scenario top:
                 lateral(0.2m, side_of: second_car, at: end)
                 change_speed(20kph)
                 change_speed([10kph..20kph])
-                speed(same_as: second_car, direction: lateral)
+                speed(same_as: second_car)
+                keep_speed()
+                acceleration(5kphps)
+                #yaw([2s..3deg]) # [Error] wrong unit in the range
+                yaw(2deg)
+                distance([30m..50m])
+
 
 

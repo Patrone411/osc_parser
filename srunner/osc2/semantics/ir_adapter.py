@@ -23,7 +23,7 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
             pos.append(a)
 
     if pos:
-        if m.name in ("position", "lateral"):
+        if m.name in ("position", "lateral", "distance"):
             named.setdefault("distance", pos[0])
         elif m.name in ("speed", "change_speed"):
             named.setdefault("speed", pos[0])
@@ -31,6 +31,9 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
             named.setdefault("acceleration", pos[0])
         elif m.name == "along":
             named.setdefault("route", pos[0])
+        elif m.name == "yaw":
+            named.setdefault("angle", pos[0])  # <-- add this line
+
 
     for k, v in (m.kwargs or {}).items():
         named[k] = v

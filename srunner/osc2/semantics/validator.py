@@ -74,11 +74,12 @@ def infer_type(arg: ArgValue):
         length_units = {"meter","millimeter","centimeter","kilometer","inch","feet","mile","micrometer"}
         speed_units = {"meter_per_second","kilometer_per_hour","mile_per_hour"}
         accel_units = {"meter_per_sec_sqr","kilometer_per_hour_per_sec","mile_per_hour_per_sec","feet_per_sec_sqr"}
-
+        angle_units = {"degree","radian"}
         if uname in time_units:   return "time"
         if uname in length_units: return "length"
         if uname in speed_units:  return "speed"
         if uname in accel_units:  return "acceleration"
+        if uname in angle_units: return "angle"
 
         # Last resort: unknown physical
         # print(f"[infer_type] {arg.name}: unknown unit '{uname}' -> None")
