@@ -82,6 +82,8 @@ class IRLowering(ASTVisitor):
             "deg": "degree", "rad": "radian",
             # acceleration
             "mps2": "meter_per_sec_sqr", "m/s2": "meter_per_sec_sqr", "m/s^2": "meter_per_sec_sqr",
+            "kphps": "kphps", "kmhps": "kphps", "km/h/s": "kphps",
+            "mphps": "mile_per_hour_per_sec", "ftps2": "feet_per_sec_sqr", "fps2": "feet_per_sec_sqr", "g": "g",
         }
         return table.get(name, name)
 

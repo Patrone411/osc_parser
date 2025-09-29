@@ -13,6 +13,8 @@ def _unit_abbr(u) -> str:
     table = {
         "meter": "m", "second": "s", "kilometer_per_hour": "kph",
         "meter_per_second": "mps", "mile_per_hour": "mph",
+        "kilometer_per_hour_per_sec": "kph/s",
+        "mile_per_hour_per_sec": "mph/s",
         "degree": "deg", "radian": "rad",
         "millisecond": "ms", "minute": "min", "hour": "h",
         "millimeter": "mm", "centimeter": "cm", "kilometer": "km",
@@ -28,16 +30,18 @@ def _num_to_str(x: Any) -> str:
     return str(x)
 
 def _fmt_value(v: Any) -> str:
-    # Physical with Range => "[low: 10m, high: 20m]"
     if isinstance(v, Physical):
-        unit = _unit_abbr(v.unit)
-        if isinstance(v.num, Range):
-            return f"[low: {_num_to_str(v.num.start)}{unit}, high: {_num_to_str(v.num.end)}{unit}]"
-        return f"{_num_to_str(v.num)}{unit}"
-    if isinstance(v, Range):
-        return f"[{_num_to_str(v.start)}..{_num_to_str(v.end)}]"
-    if isinstance(v, str):
-        return repr(v)
+        # (existing Physical formatting)
+        ...
+    # Pretty-print your temporary path objects
+    if isinstance(v, _GenericPath):                  # <-- add this block
+        name = v.get_name() or "path"
+        ml = getattr(v, "min_lanes_required", None)
+        extra = f", min_lanes={ml}" if ml is not None else ""
+        return f"{name}{extra}"
+    # (rest unchanged)
+    if isinstance(v, Range): ...
+    if isinstance(v, str):  return repr(v)
     return _num_to_str(v)
 
 def _print_block(block, indent="  "):

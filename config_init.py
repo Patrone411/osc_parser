@@ -146,10 +146,16 @@ class ConfigInit(ASTVisitor):
         alias("deg",  "degree")
         alias("rad",  "radian")
 
-        # --- accelerations (optional convenience) ---
-        alias("mps2",  "meter_per_sec_sqr")
-        alias("m/s2",  "meter_per_sec_sqr")
-        alias("m/s^2", "meter_per_sec_sqr")
+        # --- acceleration ---
+        alias("mps2",   "meter_per_sec_sqr")
+        alias("m/s2",   "meter_per_sec_sqr")
+        alias("m/s^2",  "meter_per_sec_sqr")
+        alias("kphps",  "kilometer_per_hour_per_sec")
+        alias("kmhps",  "kilometer_per_hour_per_sec")
+        alias("km/h/s", "kilometer_per_hour_per_sec")
+        alias("mphps",  "mile_per_hour_per_sec")
+        alias("ftps2",  "feet_per_sec_sqr")
+        alias("fps2",   "feet_per_sec_sqr")
 
     def _normalize_unit_name(self, name: str) -> str:
         table = {
@@ -164,7 +170,10 @@ class ConfigInit(ASTVisitor):
             # angle
             "deg": "degree", "rad": "radian",
             # accel
+            # acceleration
             "mps2": "meter_per_sec_sqr", "m/s2": "meter_per_sec_sqr", "m/s^2": "meter_per_sec_sqr",
+            "kphps": "kilometer_per_hour_per_sec", "kmhps": "kilometer_per_hour_per_sec", "km/h/s": "kilometer_per_hour_per_sec",
+            "mphps": "mile_per_hour_per_sec", "ftps2": "feet_per_sec_sqr", "fps2": "feet_per_sec_sqr",
         }
         return table.get(name, name)
 
