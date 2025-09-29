@@ -3,31 +3,13 @@ from .pytree.ir_lowering import IRLowering
 from .pytree.print_tree import print_ir
 
 from osc_parser.srunner.osc2.semantics.registry import SemanticsRegistry
-from osc_parser.srunner.osc2.semantics.validator import SemanticValidator, ArgValue
+from osc_parser.srunner.osc2.semantics.validator import SemanticValidator, infer_type
 from osc_parser.srunner.osc2.semantics.ir_adapter import validate_from_ir
 from osc_parser.srunner.osc2.ast_manager.post_checks import check_namespace_collisions, global_scope_from_ast_tree
-from osc_parser.srunner.osc2_dm.physical_types import Physical
-from osc_parser.config_init import _GenericPath
 
-def infer_type(arg: ArgValue):
-    v = arg.value
-    # Treat your GenericPath as a 'route' for validation purposes
-    if isinstance(v, _GenericPath):
-        return "route"   # matches registry: along.params.route -> "route"
-    # Physicals -> use their physical dimension name (speed/length/time/acceleration)
-    if isinstance(v, Physical):
-        try:
-            return v.unit.physical.name   # UnitObject.physical is your PhysicalObject
-        except Exception:
-            return None
-    if isinstance(v, bool):  return "bool"
-    if isinstance(v, int):   return "int"
-    if isinstance(v, float): return "float"
-    if isinstance(v, str):   return "string"
-    return None
 
 PREFIX = "osc_parser/osc/"
-osc_file = "test.osc"
+osc_file = "test_actions.osc"
 
 
 config = MiniOSC2ScenarioConfig(PREFIX + osc_file)
@@ -48,19 +30,18 @@ print(
 # PASS 2: lower to IR (choose entry scenarios, e.g., {"top"} or set() for all)
 lower = IRLowering(config, actor_registry=pass1.actor_registry, entry_names={"top"})
 scenarios = lower.lower(config.ast_tree)
-print_ir(scenarios)
 
 # Load registry + validator (optionally pass a better type hook)
 REGISTRY_PATH = "osc_parser/srunner/osc2/semantics/osc_semantics_registry.json"
 sem_registry = SemanticsRegistry.from_file(REGISTRY_PATH)
-validator    =SemanticValidator(sem_registry, type_of_expr=infer_type)
-#validator    = SemanticValidator(sem_registry)  # or with a type hook
 
+#validator    = SemanticValidator(sem_registry)  # or with a type hook
+validator = SemanticValidator(sem_registry, type_of_expr=infer_type, debug_types=True)
 # Validate semantics using the IR
 validate_from_ir(scenarios, validator)
 print("Semantic validation completed.")
 
-
+print_ir(scenarios)
 
 """
 config = MiniOSC2ScenarioConfig(PREFIX + osc_file)

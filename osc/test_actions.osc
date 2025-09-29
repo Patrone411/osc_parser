@@ -27,7 +27,13 @@ scenario top:
                 speed(10kph, at: end)
 
             # Move to position in front of my_car and stop, with duration 3 seconds
-            ego_vehicle.move(duration: 3s) with:
+            ego_vehicle.drive(duration: 3s) with:
                 speed(0kph, at: end)
+                speed(0kph)
                 position(3m, ahead_of: second_car, at: end)
                 lateral(0.2m, side_of: second_car, at: end)
+                change_speed(20kph)
+                change_speed([10kph..20kph])
+                speed(same_as: second_car, direction: lateral)
+
+

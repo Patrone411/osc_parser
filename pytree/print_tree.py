@@ -30,19 +30,26 @@ def _num_to_str(x: Any) -> str:
     return str(x)
 
 def _fmt_value(v: Any) -> str:
+
+     # Pretty physical values (and ranges of them)
     if isinstance(v, Physical):
-        # (existing Physical formatting)
-        ...
+        unit = _unit_abbr(v.unit)
+        if isinstance(v.num, Range):
+            return f"[low: {_num_to_str(v.num.start)} {unit}, high: {_num_to_str(v.num.end)} {unit}]"
+        return f"{_num_to_str(v.num)} {unit}"
+    
     # Pretty-print your temporary path objects
     if isinstance(v, _GenericPath):                  # <-- add this block
         name = v.get_name() or "path"
         ml = getattr(v, "min_lanes_required", None)
         extra = f", min_lanes={ml}" if ml is not None else ""
         return f"{name}{extra}"
+    
     # (rest unchanged)
     if isinstance(v, Range): ...
     if isinstance(v, str):  return repr(v)
     return _num_to_str(v)
+
 
 def _print_block(block, indent="  "):
     pad = indent

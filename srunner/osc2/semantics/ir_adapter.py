@@ -25,9 +25,9 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
     if pos:
         if m.name in ("position", "lateral"):
             named.setdefault("distance", pos[0])
-        elif m.name == "speed":
+        elif m.name in ("speed", "change_speed"):
             named.setdefault("speed", pos[0])
-        elif m.name == "acceleration":
+        elif m.name in ("acceleration", "change_acceleration"):
             named.setdefault("acceleration", pos[0])
         elif m.name == "along":
             named.setdefault("route", pos[0])

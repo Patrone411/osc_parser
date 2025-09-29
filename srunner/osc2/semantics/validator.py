@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple, Set, Callable
+from osc_parser.srunner.osc2_dm.physical_types import Physical
 
 from .registry import SemanticsRegistry, ActionSpec, OverloadSpec, ModifierSpec, ModifierVariantSpec
 
@@ -42,6 +43,54 @@ class ValidationResult:
     resolved_args: Dict[str, Any]
     resolved_modifiers: List[Tuple[str, str, Dict[str, Any]]]  # (mod_name, variant_name, args)
 
+def infer_type(arg: ArgValue):
+    v = arg.value
+    if isinstance(v, Physical):
+        u = v.unit
+
+        # Try common attribute names for the physical dimension object
+        phys_obj = (
+            getattr(u, "physical", None)
+            or getattr(u, "physical_object", None)
+            or getattr(u, "physical_type", None)
+        )
+
+        # Try to pull a name off the physical object
+        phys_name = (
+            getattr(phys_obj, "type_name", None)
+            or getattr(phys_obj, "name", None)
+            or getattr(phys_obj, "physical_name", None)
+        )
+
+        if phys_name:
+            # e.g. "length", "time", "speed", "acceleration"
+            print(f"[infer_type] {arg.name}={v} -> {phys_name} (unit={getattr(u,'unit_name',getattr(u,'name','?'))})")
+            return phys_name
+
+        # Fallback: infer by canonical unit name
+        uname = getattr(u, "unit_name", None) or getattr(u, "name", None)
+
+        time_units = {"second","millisecond","minute","hour"}
+        length_units = {"meter","millimeter","centimeter","kilometer","inch","feet","mile","micrometer"}
+        speed_units = {"meter_per_second","kilometer_per_hour","mile_per_hour"}
+        accel_units = {"meter_per_sec_sqr","kilometer_per_hour_per_sec","mile_per_hour_per_sec","feet_per_sec_sqr"}
+
+        if uname in time_units:   return "time"
+        if uname in length_units: return "length"
+        if uname in speed_units:  return "speed"
+        if uname in accel_units:  return "acceleration"
+
+        # Last resort: unknown physical
+        # print(f"[infer_type] {arg.name}: unknown unit '{uname}' -> None")
+        return None
+    
+    if isinstance(v, bool):  return "bool"
+    if isinstance(v, int):   return "int"
+    if isinstance(v, float): return "float"
+    if isinstance(v, str):   return "string"
+    return None
+
+
 # ---------- Validator ----------
 
 class SemanticValidator:
@@ -50,15 +99,42 @@ class SemanticValidator:
     Host feeds it ActionCall records (from IR adapter or AST adapter).
     """
 
-    def __init__(self, registry: SemanticsRegistry, type_of_expr: Optional[Callable[[ArgValue], Optional[str]]] = None):
+    def __init__(self, registry: SemanticsRegistry, type_of_expr: Optional[Callable[[ArgValue], Optional[str]]] = None, debug_types: bool=False):
         self.registry = registry
         # Hook to infer type name from ArgValue if not given (e.g. Physical -> "length")
         self.type_of_expr = type_of_expr or (lambda a: a.type_name)
+        self.debug_types = debug_types
 
+    def _dbg(self, msg: str):
+        if getattr(self, "debug_types", False):
+            print(msg)
     # =====================================================================
     # Normalization helpers (dicts vs. objects)
     # =====================================================================
+    def _arg_type_ok(self, expected: str, arg: "ArgValue") -> bool:
+        actual = arg.type_name or self.type_of_expr(arg)
+        self._dbg(f"[type-of] param={arg.name!r} expected={expected!r} actual={actual!r} value={arg.value!r}")
+        if actual is None:
+            # STRICT: if we can’t infer a type, treat it as mismatch
+            return False
 
+        # small convenience example
+        if expected == "uint" and actual == "int":
+            return True
+
+        # allow enums to be passed as strings (optional)
+        enums = {}
+        if hasattr(self.registry, "enums"):
+            enums = self.registry.enums
+        elif hasattr(self.registry, "doc"):
+            enums = (self.registry.doc or {}).get("enums", {})
+
+        if expected in enums:
+            # treat plain strings as OK for enums
+            return actual in (expected, "string")
+
+        return actual == expected
+    
     def _get_action_spec(self, qname: str):
         """
         Return the action spec (dict or object) for a qualified action name.
@@ -298,7 +374,23 @@ class SemanticValidator:
                 failures.append((qname, f"missing required: {sorted(missing)}"))
                 continue
 
-            # (optional) type checks could be added here using effective_params[k]["type"]
+            # ---- NEW: type checks for supplied args ----
+            type_mismatch = []
+            for k in supplied_names:
+                expected = effective_params.get(k, {}).get("type")
+                if expected:
+                    if not self._arg_type_ok(expected, call.args[k]):
+                        got = call.args[k].type_name or self.type_of_expr(call.args[k])
+                        type_mismatch.append((k, expected, got))
+                    else:
+                        self._dbg(f"[type-check ✓] action={qname} param={k!r} ok")
+                else:
+                    self._dbg(f"[type-check ?] action={qname} param={k!r} has no 'type' in registry")
+            if type_mismatch:
+                self._dbg(f"[type-check ✗] action={qname} mismatches={type_mismatch}")
+                failures.append((qname, f"type mismatch: {type_mismatch}"))
+                continue
+            # ---- END NEW ----
 
             # SUCCESS -> return normalized values (not ArgValue wrappers)
             resolved_args = {k: v.value for k, v in call.args.items()}
@@ -343,6 +435,7 @@ class SemanticValidator:
             if pn in m.args:
                 arg = m.args[pn]
                 arg_t = arg.type_name or self.type_of_expr(arg)
+                self._dbg(f"[mod-type-of] mod={m.name} param={pn!r} expected={ps.type!r} actual={arg_t!r} value={m.args[pn].value!r}")
                 if arg_t and ps.type and arg_t != ps.type:
                     return False, {}
                 resolved[pn] = arg.value
