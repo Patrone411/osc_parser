@@ -100,65 +100,6 @@ unit radian_per_sec_sqr of angular_acceleration is SI(rad: 1, s: -2, factor: 1)
 unit radpsps            of angular_acceleration is SI(rad: 1, s: -2, factor: 1)
 # end::library-physical-angular_acceleration[]
 
-# tag::library-physical-mass[]
-type mass is SI(kg: 1)
-unit gram     of mass is SI(kg: 1, factor: 0.001)
-unit kilogram of mass is SI(kg: 1, factor: 1)
-unit kg       of mass is SI(kg: 1, factor: 1)
-unit ton      of mass is SI(kg: 1, factor: 1000)
-unit pound    of mass is SI(kg: 1, factor: 0.45359237)
-unit lb       of mass is SI(kg: 1, factor: 0.45359237)
-# end::library-physical-mass[]
-
-# tag::library-physical-temperature[]
-type temperature is SI(K: 1)
-unit K          of temperature is SI(K: 1, factor: 1)
-unit kelvin     of temperature is SI(K: 1, factor: 1)
-unit celsius    of temperature is SI(K: 1, factor: 1, offset: 273.15)
-unit C          of temperature is SI(K: 1, factor: 1, offset: 273.15)
-unit fahrenheit of temperature is SI(K: 1, factor: 0.555555556, offset: 255.372222222)
-unit F          of temperature is SI(K: 1, factor: 0.555555556, offset: 255.372222222)
-# end::library-physical-temperature[]
-
-# tag::library-physical-pressure[]
-type pressure is SI(kg: 1, m: -1, s: -2)
-unit newton_per_meter_sqr of pressure is SI(kg: 1, m: -1, s: -2, factor: 1)
-unit Pa                   of pressure is SI(kg: 1, m: -1, s: -2, factor: 1)
-unit pascal               of pressure is SI(kg: 1, m: -1, s: -2, factor: 1)
-unit hPa                  of pressure is SI(kg: 1, m: -1, s: -2, factor: 100)
-unit atm                  of pressure is SI(kg: 1, m: -1, s: -2, factor: 101325)
-# end::library-physical-pressure[]
-
-# tag::library-physical-luminous_intensity[]
-type luminous_intensity is SI(cd: 1)
-unit cd      of luminous_intensity is SI(cd: 1, factor: 1)
-unit candela of luminous_intensity is SI(cd: 1, factor: 1)
-# end::library-physical-luminous_intensity[]
-
-# tag::library-physical-luminous_flux[]
-type luminous_flux is SI(cd: 1, rad: 2)
-unit lm    of luminous_flux is SI(cd: 1, rad: 2, factor: 1)
-unit lumen of luminous_flux is SI(cd: 1, rad: 2, factor: 1)
-# end::library-physical-luminous_flux[]
-
-# tag::library-physical-illuminance[]
-type illuminance is SI(cd: 1, rad: 2, m: -2)
-unit lx  of illuminance is SI(cd: 1, rad: 2, m: -2, factor: 1)
-unit lux of illuminance is SI(cd: 1, rad: 2, m: -2, factor: 1)
-# end::library-physical-illuminance[]
-
-# tag::library-physical-electrical_current[]
-type electrical_current is SI(A: 1)
-unit ampere of electrical_current is SI(A: 1, factor: 1)
-unit A      of electrical_current is SI(A: 1, factor: 1)
-# end::library-physical-electrical_current[]
-
-# tag::library-physical-amount_of_substance[]
-type amount_of_substance is SI(mol: 1)
-unit mole of amount_of_substance is SI(mol: 1, factor: 1)
-unit mol  of amount_of_substance is SI(mol: 1, factor: 1)
-# end::library-physical-amount_of_substance[]
-
 ###########
 # Structs
 ###########
@@ -168,20 +109,8 @@ struct position_3d:
     x: length
     y: length
     z: length
-    def norm() -> length is undefined
 # end::library-position_3d[]
 
-# tag::library-celestial_position_2d[]
-struct celestial_position_2d:
-    azimuth: angle
-    elevation: angle
-# end::library-celestial_position_2d[]
-
-# tag::library-geodetic_position_2d[]
-struct geodetic_position_2d:
-    latitude: angle
-    longitude: angle
-# end::library-geodetic_position_2d[]
 
 # tag::library-orientation_3d[]
 struct orientation_3d:
@@ -201,7 +130,6 @@ struct translational_velocity_3d:
     x: speed
     y: speed
     z: speed
-    def norm() -> speed is undefined
 # end::library-translational_velocity_3d[]
 
 # tag::library-orientation_rate_3d[]
@@ -222,7 +150,6 @@ struct translational_acceleration_3d:
     x: acceleration
     y: acceleration
     z: acceleration
-    def norm() -> acceleration is undefined
 # end::library-translational_acceleration_3d[]
 
 # tag::library-orientation_acceleration_3d[]
@@ -311,19 +238,15 @@ struct relative_trajectory_odr inherits relative_trajectory:
 
 # tag::library-shape-any[]
 struct any_shape:
-    def duration() -> time is undefined
+    _shape: shape
 
-struct any_acceleration_shape inherits any_shape:
-    def compute(time: time) -> acceleration is undefined
+struct any_acceleration_shape inherits any_shape
 
-struct any_speed_shape inherits any_shape:
-    def compute(time: time) -> speed is undefined
+struct any_speed_shape inherits any_shape
 
-struct any_position_shape inherits any_shape:
-    def compute(time: time) -> length is undefined
+struct any_position_shape inherits any_shape
 
-struct any_lateral_shape inherits any_shape:
-    def compute(time: time) -> length is undefined
+struct any_lateral_shape inherits any_shape
 # end::library-shape-any[]
 
 # tag::library-shape-common[]
@@ -352,23 +275,6 @@ struct common_lateral_shape inherits any_lateral_shape:
 # Enums
 ###########
 
-enum color: [
-    white,                    # RGB(255,255,255)
-    silver,                   # RGB(192,192,192)
-    gray,                     # RGB(128,128,128)
-    black,                    # RGB(0,0,0)
-    red,                      # RGB(255,0,0)
-    maroon,                   # RGB(128,0,0)
-    yellow,                   # RGB(255,255,0)
-    olive,                    # RGB(128,128,0)
-    lime,                     # RGB(0,255,0)
-    green,                    # RGB(0,128,0)
-    aqua,                     # RGB(0,255,255)
-    teal,                     # RGB(0,128,128)
-    blue,                     # RGB(0,0,255)
-    navy,                     # RGB(0,0,128)
-    fuchsia,                  # RGB(255,255,0)
-    purple]                   # RGB(255,0,255)
 
 enum intended_infrastructure: [
     driving,                  # OpenDRIVE: "normal" drivable road, which is not one of the other types
@@ -580,28 +486,19 @@ actor osc_actor
 
 actor physical_object inherits osc_actor:
     bounding_box: bounding_box                               # Mandatory: See bounding_box struct
-    color: color                                             # Optional: See color enum
     geometry_reference: string                               # Optional: Opaque reference of an associated 3D geometry model of the physical object. It is implementation-specific how model references are resolved to 3D models.
     center_of_gravity: position_3d                           # Mandatory: Center of gravity of the object. If unknown, the center of the bounding box may be used instead.
     var pose: pose_3d                                        # Position and orientation measured in world coordinates with world system as reference.
-    def object_distance(reference: physical_object, direction: distance_direction, mode: distance_mode = reference_points) -> length is undefined
-    def get_s_coord(route_type: on_route_type = on_road) -> length is undefined
-    def get_t_coord(route_type: on_route_type= on_road) -> length is undefined
-    def get_route_point(route_type: on_route_type = on_road) -> route_point is undefined
 
 actor stationary_object inherits physical_object
 
 actor movable_object inherits physical_object:
-    def distance_along_route(route: route, from: route_distance_enum = from_start) -> length is undefined
     var velocity: velocity_6d                                 # Mandatory: Translational and rotational velocity measured in object coordinates with world system as reference.
     var acceleration: acceleration_6d                         # Mandatory: Translational and rotational acceleration measured in object coordinates with world system as reference.
     var speed: speed                                          # Mandatory: Speed in center_of_gravity defined as sqrt(velocity.translational.x² + velocity.translational.y²) * sign(velocity.translational.x)
 
 actor traffic_participant inherits movable_object:
     intended_infrastructure: list of intended_infrastructure            # Mandatory: See intended_infrastructure for definition. Intended usage is for further specification of an entity. For example, together with vehicle_category or to provide hints for implemenations where to spawn and / or auto-route entities. Note that multiple types of infrastructure can be assigned because of the list character of this type.
-    def time_to_collision(reference: physical_object) -> time is undefined
-    def time_headway(reference: physical_object) -> time is undefined
-    def space_gap(reference: physical_object, direction: distance_direction) -> length is undefined
 
 actor vehicle inherits traffic_participant:
     vehicle_category: vehicle_category                        # Mandatory: See vehicle_category
@@ -610,48 +507,7 @@ actor vehicle inherits traffic_participant:
 
 actor person inherits traffic_participant
 
-actor animal inherits traffic_participant
 
-###########
-# environment (an Actor)
-###########
-
-actor environment inherits osc_actor:
-    geodetic_position: geodetic_position_2d # Optional: Geodetic position of world coordinate frame regarding WGS84. Regarding usage for determination of angle of celestial light sources see remark above.
-    datetime: time                       # Optional: Date and time at start of scenario as Unix time, i.e. Number of seconds that have elapsed since January 1, 1970 (midnight UTC/GMT), not counting leap seconds. Regarding usage for determination of angle of celestial light sources see remark above.
-    var weather: weather                 # Optional: See struct weather
-    sun: celestial_light_source          # Optional: Sun as instance of celestial_light_source.
-    moon: celestial_light_source         # Optional: Moon as instance of celestial_light_source.
-    def local_to_unix_time(year: uint, month: uint, day: uint, hour: uint, minute: uint, second: uint, time_zone: float) -> time is undefined
-
-struct weather:
-    air: air                             # Optional: See struct air
-    rain: precipitation                  # Optional: Liquid water in form of droplets falling under gravity.
-    snow: precipitation                  # Optional: Frozen water in delicately-crystalline flakes falling under gravity.
-    wind: wind                           # Optional: See struct wind
-    fog: fog                             # Optional: See struct fog
-    clouds: clouds                       # Optional: See struct clouds
-
-struct air:
-    temperature: temperature             # Optional: Temperature on ground level.
-    atmospheric_pressure: pressure       # Optional: Atmospheric pressure on ground level.
-    relative_humidity: float             # Optional: Relative humidity on ground level.
-
-struct precipitation:
-    intensity: speed                     # Optional: Global intensity of precipitation given as volumetric flux. In case of (partially) solid precipitation, the equivalent melted volume shall be considered. Note that volumetric flux is describing a volume flow across an area, but after reduction the unit results in the same unit as for speeds. As of now it is not possible in
-
-struct wind:
-    speed: speed                         # Mandatory: The expected value of wind speed. To estimate the expected value, rolling mean value over a specific short interval (for example, 3s) can be used.
-    direction: angle                     # Mandatory: The origin direction of the wind (not target direction) in the ground/x-y-plane with clockwise increasing values to match common definitions. This results in 0 deg for a wind blowing from the North 90 deg for a wind blowing from the East 90 deg, if x-axis and y-axis are mapped to East and North.
-
-struct fog:
-    visual_range: length                 # Mandatory: Value of optical range of visible light in the standard setting, which corresponds to a certain density of fog.
-
-struct clouds:
-    cloudiness: uint                     # Mandatory: Using okta scale to define which portion of the sky is covered with clouds. Ranging from 0 for completely clear sky to 8 for a completely overcast sky. Values above 8 shall not be used.
-
-struct celestial_light_source:
-    var position: celestial_position_2d  # Mandatory: Position of the light source, see definition of physical type celestial_position_2d.
 
 ###########
 # Map (an Actor)
@@ -662,24 +518,7 @@ actor map inherits osc_actor:
     routes: list of route
     junctions: list of junction
     driving_rule: driving_rule
-    def odr_to_route_point(road_id: string, lane_id: string, s: length, t: length) -> route_point is undefined
-    def xyz_to_route_point(x: length, y: length, z: length) -> route_point is undefined
-    def route_point_to_xyz(route_point: route_point) -> xyz_point is undefined
-    def outer_side() -> side_left_right is undefined
-    def inner_side() -> side_left_right is undefined
-    def create_route(routes: list of route, connect_points_by: connect_route_points, legal_route: bool) -> compound_route is undefined
-    def create_route_point(route: route, s: length, t: length) -> route_point is undefined
-    def create_xyz_point(x: length, y: length, z: length) -> xyz_point is undefined
-    def create_odr_point(road_id: string, lane_id: string, s: length, t: length) -> odr_point is undefined
-    def create_path(points: list of pose_3d, interpolation: path_interpolation) -> path is undefined
-    def create_path_odr_points(points: list of odr_point, interpolation: path_interpolation, on_road_network: bool) -> path is undefined
-    def create_path_route_points(points: list of route_point, interpolation: path_interpolation, on_road_network: bool) -> path is undefined
-    def create_trajectory(points: list of pose_3d, time_stamps: list of time,interpolation: path_interpolation) -> trajectory is undefined
-    def create_trajectory_odr_points(points: list of odr_point, time_stamps: list of time, interpolation: path_interpolation, on_road_network: bool) -> trajectory is undefined
-    def create_trajectory_route_points(points: list of route_point, time_stamps: list of time, interpolation: path_interpolation, on_road_network: bool) -> trajectory is undefined
-    def resolve_relative_path(relative_path: relative_path, reference: physical_object, transform: relative_transform) -> path is undefined
-    def resolve_relative_trajectory(relative_trajectory: relative_trajectory, reference: physical_object, transform: relative_transform) -> trajectory is undefined
-    def get_map_file() -> string is undefined           #from map.map_file
+    
 
 struct route:                                   # Object of map
     length: length                              # Optional: Nominal length of the route, measured along the s-axis of the route. Does not apply to route_point
@@ -687,9 +526,7 @@ struct route:                                   # Object of map
     min_lanes: uint                             # Optional: Minimum number of drivable lanes along this route. Applies only to these children: road, lane_section
     max_lanes: uint                             # Optional: Maximum number of drivable lanes along this route. Applies only to these children: road, lane_section
     anchors: list of string                     # Optional: The strings in here can be matched to unique items in the map files specified in file_name
-    def start_point() -> route_point is undefined
-    def end_point() -> route_point is undefined
-
+   
 struct route_element inherits route             # Interface Class (of route)
 
 struct road inherits route_element:
@@ -850,37 +687,6 @@ action person.action_for_person inherits movable_object.action_for_movable_objec
 
 action person.walk inherits person.action_for_person
 
-###########
-# Action - environment
-###########
-
-action environment.action_for_environment inherits osc_actor.osc_action
-
-action environment.air inherits environment.action_for_environment:
-    temperature: temperature
-    pressure: pressure
-    relative_humidity: float
-
-action environment.rain inherits environment.action_for_environment:
-    intensity: speed
-
-action environment.snow inherits environment.action_for_environment:
-    intensity: speed
-
-action environment.wind inherits environment.action_for_environment:
-    speed: speed
-    direction: angle
-
-action environment.fog inherits environment.action_for_environment:
-    visual_range: length
-
-action environment.cloud inherits environment.action_for_environment:
-    cloudiness: uint
-
-action environment.assign_celestial_position inherits environment.action_for_environment:
-    light_source: celestial_light_source
-    azimuth: angle
-    elevation: angle
 
 #####################################
 # Modifier - location based modifiers

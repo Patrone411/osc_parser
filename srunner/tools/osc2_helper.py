@@ -83,18 +83,14 @@ class OSC2Helper(object):
         # abort early on syntax errors
         if cel.count > 0 or parse_tree is None:
             return None
-
+        
         # build your project AST (nodes in ast_manager.ast_node)
         ast_root = _build_ast_from_parse_tree(parse_tree)
-
-        # (optional) keep your actor validation pass here if you still want it,
-        # but it’s not required for AST creation.
         walker = ParseTreeWalker()
         collector = ActorsCollect(case_insensitive=True)
         walker.walk(collector, parse_tree)
         validator = ActorsValidate(collector.actors, _Reporter(), case_insensitive=True)
         walker.walk(validator, parse_tree)
-
         cls.ast_tree = ast_root
         return cls.ast_tree
 
