@@ -5,7 +5,7 @@ from ..srunner.osc2.ast_manager.ast_vistor import ASTVisitor   # note: module na
 from ..srunner.osc2_dm.physical_types import Physical, Range
 from .pytree import (
     ScenarioNode, EventNode, VarNode, ActorInst,
-    SerialBlock, ParallelBlock, ActionCall, ModifierCall,
+    SerialBlock, ParallelBlock, OneOfBlock, ActionCall, ModifierCall,
 )
 
 MOD_ALIAS = {
@@ -200,6 +200,8 @@ class IRLowering(ASTVisitor):
             blk = SerialBlock(label=label)
         elif kind == "parallel":
             blk = ParallelBlock(label=label, duration=None)
+        elif kind == "one_of":
+            blk = OneOfBlock(label=label)
         else:
             # fallback: treat unknown as serial
             blk = SerialBlock(label=label)

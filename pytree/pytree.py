@@ -44,6 +44,11 @@ class ParallelBlock:
     children: List[Any] = field(default_factory=list)
 
 @dataclass
+class OneOfBlock:
+    label: Optional[str] = None
+    children: List[Any] = field(default_factory=list)
+
+@dataclass
 class ScenarioNode:
     name: str
     events: List[EventNode] = field(default_factory=list)

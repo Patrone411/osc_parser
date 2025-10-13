@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple, Set, Callable
-from osc_parser.srunner.osc2_dm.physical_types import Physical
+from osc_parser.srunner.osc2_dm.physical_types import Physical, Range
 
 from .registry import SemanticsRegistry, ActionSpec, OverloadSpec, ModifierSpec, ModifierVariantSpec
 
@@ -86,11 +86,18 @@ def infer_type(arg: ArgValue):
         return None
     
     if isinstance(v, bool):  return "bool"
-    if isinstance(v, int):   return "int"
+    if isinstance(v, int):
+        return "uint" if v >= 0 else "int"
     if isinstance(v, float): return "float"
     if isinstance(v, str):   return "string"
     return None
 
+_ENUM_LITERALS = {
+    "side_left_right": {"left", "right"},
+    "lane_change_side": {"left", "right"},
+    "at": {"start", "end"},
+    # add others as needed, e.g. movement_mode, track, etc.
+}
 
 # ---------- Validator ----------
 
@@ -106,35 +113,71 @@ class SemanticValidator:
         self.type_of_expr = type_of_expr or (lambda a: a.type_name)
         self.debug_types = debug_types
 
+    def _is_numeric_range(self, v):
+        # duck-typing for your Range class
+        return hasattr(v, "start") and hasattr(v, "end")
+
     def _dbg(self, msg: str):
         if getattr(self, "debug_types", False):
             print(msg)
     # =====================================================================
     # Normalization helpers (dicts vs. objects)
     # =====================================================================
-    def _arg_type_ok(self, expected: str, arg: "ArgValue") -> bool:
-        actual = arg.type_name or self.type_of_expr(arg)
-        self._dbg(f"[type-of] param={arg.name!r} expected={expected!r} actual={actual!r} value={arg.value!r}")
-        if actual is None:
-            # STRICT: if we can’t infer a type, treat it as mismatch
-            return False
+    def _arg_type_ok(self, expected: str, arg) -> bool:
+        """Loose but practical matcher for our registry types."""
+        # Try the provided hook or ArgValue.type_name first
+        actual = getattr(arg, "type_name", None) or self.type_of_expr(arg)
+        v = getattr(arg, "value", arg)
 
-        # small convenience example
-        if expected == "uint" and actual == "int":
+        # Exact match from hook
+        if actual and actual == expected:
             return True
 
-        # allow enums to be passed as strings (optional)
-        enums = {}
-        if hasattr(self.registry, "enums"):
-            enums = self.registry.enums
-        elif hasattr(self.registry, "doc"):
-            enums = (self.registry.doc or {}).get("enums", {})
+        # Physical types: accept by unit category
+        try:
+            from osc_parser.srunner.osc2_dm.physical_types import Physical
+        except Exception:
+            Physical = ()
 
-        if expected in enums:
-            # treat plain strings as OK for enums
-            return actual in (expected, "string")
+        if isinstance(v, Physical):
+            # Map unit categories to registry types
+            unit = getattr(v.unit, "unit_name", None) or getattr(v.unit, "name", None)
+            if unit:
+                uname = str(unit)
+                time_units   = {"second","millisecond","minute","hour"}
+                length_units = {"meter","millimeter","centimeter","kilometer","inch","feet","mile","micrometer"}
+                speed_units  = {"meter_per_second","kilometer_per_hour","mile_per_hour"}
+                accel_units  = {"meter_per_sec_sqr","kilometer_per_hour_per_sec","mile_per_hour_per_sec","feet_per_sec_sqr"}
+                angle_units  = {"degree","radian"}
 
-        return actual == expected
+                if expected == "time"         and uname in time_units:   return True
+                if expected == "length"       and uname in length_units: return True
+                if expected == "speed"        and uname in speed_units:  return True
+                if expected == "acceleration" and uname in accel_units:  return True
+                if expected == "angle"        and uname in angle_units:  return True
+
+        # Unsigned ints
+        if expected == "uint" and isinstance(v, int) and v >= 0:
+            return True
+        if expected == "uint":
+            # allow strings from the hook (sometimes actual is "int")
+            if actual in ("int", "uint"):
+                return True
+            return False
+        if expected == "int":
+            if self._is_numeric_range(v):
+                # optional: ensure endpoints are numeric
+                return isinstance(v.start, (int, float)) and isinstance(v.end, (int, float))
+            return isinstance(v, int)
+
+        # Enum-ish string literals (case-insensitive)
+        if expected in self._ENUM_LITERALS if hasattr(self, "_ENUM_LITERALS") else _ENUM_LITERALS:
+            literals = getattr(self, "_ENUM_LITERALS", _ENUM_LITERALS)[expected]
+            if isinstance(v, str) and v.lower() in literals:
+                return True
+
+        # Last resort: accept exact type label from hook if it matches
+        return False
     
     def _get_action_spec(self, qname: str):
         """
@@ -435,11 +478,11 @@ class SemanticValidator:
         for pn, ps in var.params.items():
             if pn in m.args:
                 arg = m.args[pn]
-                arg_t = arg.type_name or self.type_of_expr(arg)
-                self._dbg(f"[mod-type-of] mod={m.name} param={pn!r} expected={ps.type!r} actual={arg_t!r} value={m.args[pn].value!r}")
-                if arg_t and ps.type and arg_t != ps.type:
+                if ps.type and not self._arg_type_ok(ps.type, arg):
+                    # (optional) debug
+                    # print(f"[mod-type-of] mod={m.name} param='{pn}' expected='{ps.type}' actual={getattr(arg,'type_name',None) or self.type_of_expr(arg)} value={getattr(arg,'value',arg)}")
                     return False, {}
-                resolved[pn] = arg.value
+                resolved[pn] = getattr(arg, "value", arg)
                 if ps.ignored_if_present:
                     for bad in ps.ignored_if_present:
                         if bad in provided:

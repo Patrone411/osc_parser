@@ -38,8 +38,15 @@ scenario top:
                 keep_speed()
                 acceleration(5kphps)
                 #yaw([2s..3deg]) # [Error] wrong unit in the range
+                #yaw(2m)
                 yaw(2deg)
                 distance([30m..50m])
-
+                lane(1)
+                lane(1, from: left)
+                lane(side_of: second_car, side: left)
+                lane(2,side_of: second_car, side: left)
+                change_lane(side: left)
+                change_lane([1..3])
+            npc.walk(drive_duration)
 
 

@@ -10,6 +10,7 @@ from osc_parser.srunner.osc2.ast_manager.post_checks import check_namespace_coll
 
 PREFIX = "osc_parser/osc/"
 osc_file = "test_actions.osc"
+osc_file = "relative.osc"
 
 
 config = MiniOSC2ScenarioConfig(PREFIX + osc_file)
@@ -34,6 +35,14 @@ scenarios = lower.lower(config.ast_tree)
 # Load registry + validator (optionally pass a better type hook)
 REGISTRY_PATH = "osc_parser/srunner/osc2/semantics/osc_semantics_registry.json"
 sem_registry = SemanticsRegistry.from_file(REGISTRY_PATH)
+print('test1')
+ms = sem_registry.get_modifier("lane")
+print("lane variants:", [getattr(v, "name", "<default>") for v in ms.variants])
+for v in ms.variants:
+    print("  params:", list(v.params.keys()))
+print('test2')
+
+
 
 #validator    = SemanticValidator(sem_registry)  # or with a type hook
 validator = SemanticValidator(sem_registry, type_of_expr=infer_type, debug_types=True)

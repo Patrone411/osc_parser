@@ -5,13 +5,36 @@ from .validator import ActionCall as VActionCall, ModifierAttach as VModifierAtt
 from osc_parser.srunner.osc2_dm.physical_types import Physical
 from osc_parser.config_init import _GenericPath
 
+# Map each modifier name to the canonical param its *first positional* represents
+_POS0_PARAM = {
+    "speed": "speed",
+    "change_speed": "speed",
+    "acceleration": "acceleration",
+    "position": "distance",
+    "distance": "distance",
+    "lateral": "distance",
+    "yaw": "angle",
+    "lane": "lane",
+    "change_lane": "lane",
+}
+
+def _first_positional_param_for(mod_name: str) -> str:
+    return _POS0_PARAM.get(mod_name)
+
+
 def _to_argdict(args_list):
     """Convert IR ActionCall.args (list of scalars or (k,v)) into dict."""
     named = {}
+    pos = []
     for a in args_list:
         if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], str):
             named[a[0]] = a[1]
-        # positional action args not used in your registry for now
+        else:
+            pos.append(a)
+
+    if pos and "duration" not in named:
+        named["duration"] = pos[0]
+
     return named
 
 def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
@@ -32,7 +55,13 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
         elif m.name == "along":
             named.setdefault("route", pos[0])
         elif m.name == "yaw":
-            named.setdefault("angle", pos[0])  # <-- add this line
+            named.setdefault("angle", pos[0])
+        elif m.name == "lane":
+            named.setdefault("lane", pos[0])
+        elif m.name == "change_lane":
+            named.setdefault("lane", pos[0])
+            if len(pos) >= 2:
+                named.setdefault("side", pos[1])
 
 
     for k, v in (m.kwargs or {}).items():
@@ -107,9 +136,47 @@ def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
                         modifiers=v_mods,
                         token=getattr(ch, "token", None),
                     )
-                    validator.validate_action_call(vcall)
+                    # ⬇️ capture the result
+                    result = validator.validate_action_call(vcall)
+
+                    # modifiers: keep 1–1 by order
+                    for (mod_idx, (m_name, _variant, m_args)) in enumerate(result.resolved_modifiers):
+                        if mod_idx >= len(ch.modifiers):  # safety
+                            break
+                        irm = ch.modifiers[mod_idx]
+                        if irm.name != m_name:
+                            # fallback: try to find same-name modifier not yet processed
+                            try:
+                                irm = next(mm for mm in ch.modifiers if mm.name == m_name)
+                            except StopIteration:
+                                irm = ch.modifiers[mod_idx]
+
+                        # Ensure args/kwargs containers exist
+                        if getattr(irm, "args", None) is None:
+                            irm.args = []
+                        if getattr(irm, "kwargs", None) is None:
+                            irm.kwargs = {}
+
+                        # Handle the “pos0” canonical parameter to avoid duplicates
+                        pos0_name = _first_positional_param_for(irm.name)
+                        if pos0_name and pos0_name in m_args:
+                            # If we already have a positional present, don't add named duplicate
+                            if len(irm.args) > 0:
+                                # drop it from write-back so we don't add it as a kwarg
+                                m_args = {k: v for k, v in m_args.items() if k != pos0_name}
+                            else:
+                                # No positionals -> move this canonical param into positionals for pretty print
+                                irm.args.insert(0, m_args[pos0_name])
+                                m_args = {k: v for k, v in m_args.items() if k != pos0_name}
+
+                        # Now add the rest of the (non-pos0) resolved args as kwargs,
+                        # but NOT overwriting anything the user already supplied.
+                        for k, v in m_args.items():
+                            if k not in irm.kwargs:
+                                irm.kwargs[k] = v
+
+
                 else:
-                    # nested blocks
                     if isinstance(ch, (SerialBlock, ParallelBlock)):
                         walk_block(ch)
 

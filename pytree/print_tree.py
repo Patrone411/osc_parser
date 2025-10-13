@@ -1,5 +1,5 @@
 from typing import Any, List
-from .pytree import ScenarioNode, SerialBlock, ParallelBlock, ActionCall, ModifierCall
+from .pytree import ScenarioNode, SerialBlock, ParallelBlock, ActionCall, OneOfBlock, ModifierCall
 from ..srunner.osc2_dm.physical_types import Physical, Range
 
 try:
@@ -37,7 +37,9 @@ def _fmt_value(v: Any) -> str:
         if isinstance(v.num, Range):
             return f"[low: {_num_to_str(v.num.start)} {unit}, high: {_num_to_str(v.num.end)} {unit}]"
         return f"{_num_to_str(v.num)} {unit}"
-    
+    if isinstance(v, Range):
+        # was: return f"[{_num_to_str(v.start)}..{_num_to_str(v.end)}]"
+        return f"[low: {_num_to_str(v.start)}, high: {_num_to_str(v.end)}]"
     # Pretty-print your temporary path objects
     if isinstance(v, _GenericPath):                  # <-- add this block
         name = v.get_name() or "path"
@@ -65,6 +67,12 @@ def _print_block(block, indent="  "):
             head += f", duration: {_fmt_value(block.duration)}"
         label = f" ({block.label})" if block.label else ""
         print(f"{pad}{head}:{label}")
+        for ch in block.children:
+            _print_block(ch, indent + "  ")
+    
+    elif isinstance(block, OneOfBlock):
+        label = f" ({block.label})" if block.label else ""
+        print(f"{pad}one_of:{label}")
         for ch in block.children:
             _print_block(ch, indent + "  ")
 
