@@ -19,8 +19,10 @@ scenario top:
                 lane(1)
                 speed(s)
             second_car.drive() with:
-                position(10m, ahead_of: npc, at: start)
+                position(10m, ahead_of: ego_vehicle, at: start)
                 speed(10kph, at: start)
+                position(10m, behind: ego_vehicle, at: end)
+                speed(5kph, at: end)
                 lane(2)
 
 

@@ -59,6 +59,62 @@ def _finite01(x):
     y[~np.isfinite(x)] = 0.0
     return y
 
+def segment_ids(stitched: Dict[str, Any]) -> List[str]:
+    """
+    Return all segment ids. Your data stores them under 'road_segments'.
+    """
+    return list(stitched.get("road_segments", {}).keys())
+
+def segment_num_lanes(stitched: Dict[str, Any], seg_id: str) -> Optional[int]:
+    """
+    num_lanes is stored per segment in 'road_segments'[seg_id]['num_lanes'].
+    """
+    seg = stitched.get("road_segments", {}).get(seg_id) or {}
+    val = seg.get("num_lanes")
+    try:
+        return int(val) if val is not None else None
+    except Exception:
+        return None
+
+def actor_ids_in_segment(stitched: Dict[str, Any], seg_id: str) -> List[str]:
+    """
+    Actor ids present in a given segment come from 'actor_activities_per_segment'[seg_id].
+    """
+    return list(stitched.get("actor_activities_per_segment", {}).get(seg_id, {}).keys())
+
+    
+#TODO check if thjis is actually doing something that makes sense
+def segment_length(stitched: Dict[str, Any], seg_id: str) -> int:
+    """
+    Determine the number of frames for a segment.
+    Prefer per-segment actor arrays (e.g., 's' or 'osc_lane_id').
+    Fallback to global long_v series if needed.
+    """
+    acts = stitched.get("actor_activities_per_segment", {}).get(seg_id, {})
+    max_len = 0
+    for _actor, payload in acts.items():
+        if not isinstance(payload, dict):
+            continue
+        for key in ("s", "osc_lane_id"):
+            arr = payload.get(key)
+            if isinstance(arr, list):
+                max_len = max(max_len, len(arr))
+
+    if max_len > 0:
+        return max_len
+
+    # Fallback: use any global long_v length
+    long_v = (
+        stitched.get("general_actor_activities", {})
+                .get("all_payloads", {})
+                .get("long_v", {})
+    )
+    for _actor, arr in long_v.items():
+        if isinstance(arr, list):
+            max_len = max(max_len, len(arr))
+
+    return max_len  # 0 if truly nothing found
+    
 @dataclass
 class TagFeatures:
     """Per-segment time series bundle used by the matcher."""
@@ -173,10 +229,16 @@ class TagFeatures:
                 # lateral from lane indices
                 l_e = lane_idx[e]
                 l_n = lane_idx[n]
+                #guard for none vals
+                l_n = np.asarray(l_n, dtype=float)
+                l_e = np.asarray(l_e, dtype=float)
                 lbl = np.full((T,), LATERAL_UNKNOWN, dtype=object)
                 known = np.isfinite(l_e) & np.isfinite(l_n)
-                gt = (l_n > l_e) & known
-                lt = (l_n < l_e) & known
+                #guard for none vals
+                gt = np.zeros_like(known, dtype=bool)
+                lt = np.zeros_like(known, dtype=bool)
+                np.greater(l_n, l_e, where=known, out=gt)  # only compare where values are finite
+                np.less(l_n,  l_e, where=known, out=lt)
                 eq = (l_n == l_e) & known
                 lbl[gt] = LATERAL_RIGHT
                 lbl[lt] = LATERAL_LEFT
