@@ -92,12 +92,39 @@ def infer_type(arg: ArgValue):
     if isinstance(v, str):   return "string"
     return None
 
-_ENUM_LITERALS = {
-    "side_left_right": {"left", "right"},
-    "lane_change_side": {"left", "right"},
-    "at": {"start", "end"},
-    # add others as needed, e.g. movement_mode, track, etc.
-}
+def _extract_enums_from_registry(registry):
+    """Return { enum_name: set(literals) } regardless of how the registry is wrapped."""
+    src = None
+    if isinstance(registry, dict):
+        src = registry.get("enums")
+    if src is None:
+        src = getattr(registry, "enums", None)
+    if src is None:
+        for attr in ("data", "raw", "spec", "_data", "__dict__"):
+            d = getattr(registry, attr, None)
+            if isinstance(d, dict) and "enums" in d:
+                src = d["enums"]
+                break
+    if not isinstance(src, dict):
+        return {}
+    out = {}
+    for name, edef in src.items():
+        # edef may be a list (literals) or dict like {"literals":[...]}
+        if isinstance(edef, dict):
+            lits = edef.get("literals") or edef.get("values") or []
+        else:
+            lits = edef or []
+        out[name] = set(map(lambda x: str(x).lower(), lits))
+    return out
+
+def _seed_required_enums(enum_map: dict):
+    """Ensure required enums exist (ASAM common)."""
+    enum_map.setdefault("gap_direction", {"ahead", "behind", "left", "right"})
+    enum_map.setdefault("distance_direction", {"ahead", "behind"})
+    enum_map.setdefault("headway_direction", {"increase", "decrease"})
+    enum_map.setdefault("side_left_right", {"left", "right"})
+    enum_map.setdefault("lane_change_side", {"left", "right"})
+    enum_map.setdefault("at", {"start", "end"})
 
 # ---------- Validator ----------
 
@@ -112,6 +139,9 @@ class SemanticValidator:
         # Hook to infer type name from ArgValue if not given (e.g. Physical -> "length")
         self.type_of_expr = type_of_expr or (lambda a: a.type_name)
         self.debug_types = debug_types
+        self._ENUM_LITERALS = _extract_enums_from_registry(registry)
+        _seed_required_enums(self._ENUM_LITERALS)
+    
 
     def _is_numeric_range(self, v):
         # duck-typing for your Range class
@@ -125,22 +155,29 @@ class SemanticValidator:
     # =====================================================================
     def _arg_type_ok(self, expected: str, arg) -> bool:
         """Loose but practical matcher for our registry types."""
-        # Try the provided hook or ArgValue.type_name first
-        actual = getattr(arg, "type_name", None) or self.type_of_expr(arg)
+        # unwrap ArgValue-like
         v = getattr(arg, "value", arg)
+        actual = getattr(arg, "type_name", None) or (self.type_of_expr(arg) if callable(self.type_of_expr) else None)
 
-        # Exact match from hook
+        # exact type label from hook
         if actual and actual == expected:
             return True
 
-        # Physical types: accept by unit category
+        # ----- enums (instance table only) -----
+        lits = self._ENUM_LITERALS.get(expected)
+        if lits is not None:
+            # If registry provided the enum but gave no literals, accept anything (very permissive).
+            if not lits:
+                return True
+            return isinstance(v, str) and v.lower() in lits
+
+        # ----- physical categories by unit -----
         try:
             from osc_parser.srunner.osc2_dm.physical_types import Physical
         except Exception:
-            Physical = ()
+            Physical = ()  # if types not importable here
 
         if isinstance(v, Physical):
-            # Map unit categories to registry types
             unit = getattr(v.unit, "unit_name", None) or getattr(v.unit, "name", None)
             if unit:
                 uname = str(unit)
@@ -156,27 +193,26 @@ class SemanticValidator:
                 if expected == "acceleration" and uname in accel_units:  return True
                 if expected == "angle"        and uname in angle_units:  return True
 
-        # Unsigned ints
-        if expected == "uint" and isinstance(v, int) and v >= 0:
-            return True
+        # ----- ints / uints -----
+        # Accept numeric ranges for int where appropriate
+        if expected == "int":
+            if self._is_numeric_range(v):
+                return isinstance(v.start, (int, float)) and isinstance(v.end, (int, float))
+            return isinstance(v, int)
         if expected == "uint":
-            # allow strings from the hook (sometimes actual is "int")
+            if isinstance(v, int) and v >= 0:
+                return True
+            # allow hook to say it's an int-ish
             if actual in ("int", "uint"):
                 return True
             return False
-        if expected == "int":
-            if self._is_numeric_range(v):
-                # optional: ensure endpoints are numeric
-                return isinstance(v.start, (int, float)) and isinstance(v.end, (int, float))
-            return isinstance(v, int)
 
-        # Enum-ish string literals (case-insensitive)
-        if expected in self._ENUM_LITERALS if hasattr(self, "_ENUM_LITERALS") else _ENUM_LITERALS:
-            literals = getattr(self, "_ENUM_LITERALS", _ENUM_LITERALS)[expected]
-            if isinstance(v, str) and v.lower() in literals:
-                return True
+        # ----- physical_object (actor references, route refs, etc.) -----
+        if expected == "physical_object":
+            # In this validator stage we don’t resolve names; accept strings.
+            return isinstance(v, str)
 
-        # Last resort: accept exact type label from hook if it matches
+        # ----- fallback -----
         return False
     
     def _get_action_spec(self, qname: str):

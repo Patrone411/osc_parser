@@ -1,6 +1,7 @@
 from osc_parser.matching.features import TagFeatures
 from osc_parser.matching.constraints import constraints_from_ir
 from osc_parser.matching.match_single_call import match_single_call
+from osc_parser.matching.match_single_call import match_single_call_across_segments
 
 from . import MiniOSC2ScenarioConfig, ConfigInit, print_pytree, pytree_to_actor_constraints
 from .pytree.ir_lowering import IRLowering
@@ -48,35 +49,34 @@ norm = norm_all["top"]
 call = norm["calls_flat"][0]
 print("call: ", call)
 
-# 3) compile to a spec
-fps = 10
 cfg = {
-    "default_window_s": 5.0,
-    "allow_shorter_end": True,
     "presence_min_coverage": 0.9,
     "speed_min_coverage": 0.9,
-    "speed_value_tol": 0.1,   # m/s
-    "distance_tol": 2.0,      # meters
+    "speed_value_tol": 0.1,         # m/s
+    "distance_tol": 2.0,            # m
+    "change_speed_tol": 0.3,        # m/s
+    "lateral_allow_missing": True,
+    "allow_shorter_end": True,
+    "during_mode": "coverage",      # or "all" for universal “during”
+    "during_max_false": 0,          # only used when during_mode == "all"
+    "space_gap_tol": 0.2,
 }
-spec = spec_from_call(call, fps=fps, cfg=cfg)
-print (spec)
 
-# 1) load your stitched/tag json
-data = TagFeatures.load_json("./osc_parser/data/tag_result.json")
+PATH = "./osc_parser/data/4680e1fb10c57daa_tags.json"  # adjust if needed
 
-# 2) filter segments by map constraint (e.g., min lanes = 2)
+with open(PATH, "r") as f:
+        data = json.load(f)
+
 feats_by_seg = TagFeatures.load_all_segments(data, min_lanes=2)
-"""for seg_id, feats in feats_by_seg.items():
-    print(seg_id)
-    print(feats)"""
+# 5) run across segments
+hits = match_single_call_across_segments(
+    feats_by_seg,
+    call,
+    fps=10,
+    cfg=cfg,
+    max_results_per_seg=5000,
+)
 
-hits = []
-for seg_id, feats in feats_by_seg.items():
-    seg_hits = match_single_call(feats, spec, fps=fps)
-    for h in seg_hits:
-        h["segment"] = seg_id
-    hits.extend(seg_hits)
-
-print(f"found {len(hits)} matches")
-print(hits[:10])
-
+print(f"Total hits: {len(hits)}")
+for h in hits[:10]:
+    print(h)

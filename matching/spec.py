@@ -346,7 +346,223 @@ def _check_speed_same_as(feats, ego, npc, t0, t1, cfg, at: Optional[str]) -> boo
     diff = abs(float(np.nanmean(ve[m]) - np.nanmean(vn[m])))
     return diff <= tol
 
+def _check_change_space_gap(
+    feats,
+    ego: str,
+    npc: Optional[str],
+    t0: int,
+    t1: int,
+    cfg: Dict[str, Any],
+    target_arg: Dict[str, Any],
+    direction: str,
+) -> bool:
+    """
+    OSC 8.8.3.4 change_space_gap:
+      - direction in {ahead, behind} → use Δs (longitudinal)
+      - direction in {left, right}   → use Δt (lateral)
+      - inside/outside requires map.driving_rule → not implemented here
+    Target is measured along the chosen axis, not Euclidean.
 
+    Ends when the target gap is achieved at window end (t1).
+    """
+    if npc is None:
+        return False
+
+    dir_l = str(direction or "").lower()
+    # Normalize target as a distance in meters
+    spec = _norm_physical(target_arg or {}, "distance")
+    if "value" in spec:
+        tgt = float(spec["value"])
+        lo, hi = tgt, tgt
+    elif "range" in spec:
+        lo, hi = map(float, spec["range"])
+    else:
+        return False
+
+    tol = float(cfg.get("space_gap_tol", cfg.get("distance_tol", 2.0)))
+
+    ti = t1  # action semantics: "at end"
+    # Safeguard presence/size
+    def _fin(v): return (v is not None) and np.isfinite(v)
+
+    if dir_l in ("ahead", "behind"):
+        # Prefer categorical front/back from rel_position
+        pos = feats.rel_position.get((ego, npc))
+        if pos is None or ti >= len(pos):
+            return False
+
+        need = "front" if dir_l == "ahead" else "back"
+        if str(pos[ti]) != need:
+            return False
+
+        # Use Frenet s if available
+        s_e = feats.s.get(ego); s_n = feats.s.get(npc)
+        if s_e is None or s_n is None or ti >= len(s_e) or ti >= len(s_n):
+            return False
+        se = float(s_e[ti]); sn = float(s_n[ti])
+        if not (_fin(se) and _fin(sn)):
+            return False
+
+        # Δs with sign: ego ahead ⇒ se - sn > 0
+        ds = se - sn
+        val = ds if dir_l == "ahead" else -ds  # always compare positive target
+        return (val >= (lo - tol)) and (val <= (hi + tol))
+
+    if dir_l in ("left", "right"):
+        # Prefer categorical left/right from lat_rel for sign
+        lat = feats.lat_rel.get((ego, npc))
+        if lat is None or ti >= len(lat):
+            return False
+        need = dir_l
+        if str(lat[ti]).lower() != need:
+            return False
+
+        # Use Frenet t if available
+        t_e = feats.t.get(ego); t_n = feats.t.get(npc)
+        if t_e is None or t_n is None or ti >= len(t_e) or ti >= len(t_n):
+            # optional: allow missing if configured
+            return bool(cfg.get("lateral_allow_missing", True))
+        te = float(t_e[ti]); tn = float(t_n[ti])
+        if not (_fin(te) and _fin(tn)):
+            return bool(cfg.get("lateral_allow_missing", True))
+
+        dt = te - tn  # left-of means positive per Frenet convention
+        val = abs(dt)  # magnitude must match target; side enforced via lat_rel
+        return (val >= (lo - tol)) and (val <= (hi + tol))
+
+    # inside/outside would need driving rules (not implemented)
+    if bool(cfg.get("debug_match_block", False)):
+        print(f"[change_space_gap] direction '{direction}' not supported (need inside/outside logic)")
+    return False
+
+def _check_keep_space_gap(
+    feats,
+    ego: str,
+    npc: Optional[str],
+    t0: int,
+    t1: int,
+    cfg: Dict[str, Any],
+    direction: str,
+) -> bool:
+    """
+    OSC 8.8.3.5 keep_space_gap:
+      - Sample the space gap at action start (t0) along the requested direction.
+      - Enforce that gap (magnitude and sign/orientation) 'during' the window [t0..t1].
+      - direction ∈ {"longitudinal", "lateral"}  (inside/outside needs driving rules → not implemented)
+
+    Uses Frenet coordinates if available:
+      longitudinal → Δs = s_ego - s_npc
+      lateral      → Δt = t_ego - t_npc  (left positive)
+
+    We enforce:
+      • |Δaxis| ≈ |Δaxis(t0)| within ±space_gap_tol
+      • sign(Δaxis) consistent with sign at t0 (unless magnitude near 0)
+      • (optional) categorical consistency via rel_position/lat_rel when present
+    """
+    if npc is None:
+        return False
+
+    dir_l = (direction or "").lower()
+    sl = slice(t0, t1 + 1)
+
+    tol = float(cfg.get("space_gap_tol", cfg.get("distance_tol", 2.0)))
+    during_mode = str(cfg.get("during_mode", "coverage")).lower()
+    during_max_false = int(cfg.get("during_max_false", 0))
+    cov_need = float(cfg.get("speed_min_coverage", 0.9))  # reuse coverage threshold
+
+    def _ok_sign(a: float, b: float, eps: float) -> bool:
+        # allow sign flip only if one of them is near zero (≤ eps)
+        if not (np.isfinite(a) and np.isfinite(b)):
+            return False
+        if abs(a) <= eps or abs(b) <= eps:
+            return True
+        return (a >= 0) == (b >= 0)
+
+    if dir_l in ("longitudinal", "long", "s"):
+        s_e = feats.s.get(ego)
+        s_n = feats.s.get(npc)
+        if s_e is None or s_n is None:
+            return False
+        if t0 >= len(s_e) or t0 >= len(s_n):
+            return False
+        if not (np.isfinite(s_e[t0]) and np.isfinite(s_n[t0])):
+            return False
+
+        gap0 = float(s_e[t0] - s_n[t0])
+        # series during window
+        se = np.asarray(s_e[sl], dtype=float)
+        sn = np.asarray(s_n[sl], dtype=float)
+        m = np.isfinite(se) & np.isfinite(sn)
+        if not np.any(m):
+            return False
+        gaps = se - sn
+
+        mag_ok = np.zeros_like(m, dtype=bool)
+        sign_ok = np.zeros_like(m, dtype=bool)
+        mag_ok[m] = np.abs(np.abs(gaps[m]) - abs(gap0)) <= tol
+        sign_ok[m] = np.array([_ok_sign(g, gap0, tol) for g in gaps[m]])
+
+        # optional categorical check
+        pos = feats.rel_position.get((ego, npc))
+        if pos is not None:
+            pos_arr = np.asarray(pos[sl], dtype=object)
+            need = "front" if gap0 >= 0 else "back"
+            pos_m = (pos_arr == need)
+            # treat 'unknown' as missing; only enforce where known
+            known = (pos_arr == "front") | (pos_arr == "back")
+            cat_ok = ~known | pos_m
+            ok = mag_ok & sign_ok & cat_ok
+        else:
+            ok = mag_ok & sign_ok
+
+    elif dir_l in ("lateral", "lat", "t"):
+        t_e = feats.t.get(ego)
+        t_n = feats.t.get(npc)
+        if t_e is None or t_n is None:
+            # allow missing if configured (mirrors lateral distance behavior)
+            return bool(cfg.get("lateral_allow_missing", True))
+        if t0 >= len(t_e) or t0 >= len(t_n):
+            return False
+        if not (np.isfinite(t_e[t0]) and np.isfinite(t_n[t0])):
+            # if we can't sample target at t0, fail (semantics: sample on invoke)
+            return False
+
+        gap0 = float(t_e[t0] - t_n[t0])   # left positive
+        te = np.asarray(t_e[sl], dtype=float)
+        tn = np.asarray(t_n[sl], dtype=float)
+        m = np.isfinite(te) & np.isfinite(tn)
+        if not np.any(m):
+            return bool(cfg.get("lateral_allow_missing", True))
+        gaps = te - tn
+
+        mag_ok = np.zeros_like(m, dtype=bool)
+        sign_ok = np.zeros_like(m, dtype=bool)
+        mag_ok[m] = np.abs(np.abs(gaps[m]) - abs(gap0)) <= tol
+        sign_ok[m] = np.array([_ok_sign(g, gap0, tol) for g in gaps[m]])
+
+        # optional categorical check: enforce left/right where known
+        lat = feats.lat_rel.get((ego, npc))
+        if lat is not None:
+            lat_arr = np.asarray(lat[sl], dtype=object)
+            need = "left" if gap0 >= 0 else "right"
+            lat_m = (lat_arr == need)
+            known = (lat_arr == "left") | (lat_arr == "right")
+            cat_ok = ~known | lat_m
+            ok = mag_ok & sign_ok & cat_ok
+        else:
+            ok = mag_ok & sign_ok
+    else:
+        # inside/outside not supported without driving rules
+        return False
+
+    # apply "during" semantics
+    if during_mode == "coverage":
+        cov = float(np.sum(ok) / np.sum(m)) if np.any(m) else 0.0
+        return cov >= cov_need
+    else:
+        violations = int(np.sum(m & ~ok))
+        return violations <= during_max_false
+    
 # ======================================================================================
 # Compiler: build_block_query(call, fps, cfg) → (BlockQuery, candidate_pairs_or_None)
 # ======================================================================================
@@ -379,7 +595,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             referenced.append(actor_name)
 
     # always gate by presence coverage
-    checks.append(lambda feats, ego=ego: (lambda F, E, N, t0, t1, C: _check_presence(F, E, N, t0, t1, C)))(None)
+    checks.append(lambda F, E, N, t0, t1, C: _check_presence(F, E, N, t0, t1, C))
 
     # --- translate modifiers ---
     for m in (call.get("modifiers") or []):
@@ -472,7 +688,44 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             checks.append(lambda other=other, dist=dist, at=at:
                           (lambda F, E, N, t0, t1, C: _check_distance(F, E, other, t0, t1, C, dist, at)))
 
-        # You can add more modifiers here (e.g., constraints on s_dot/t_dot ranges, etc.)
+        if name == "change_space_gap":
+            target = args.get("target")
+            direction = args.get("direction")
+            reference = args.get("reference")
+            if reference:
+                # mark NPC candidate
+                def _ref(actor_name: Optional[str]):
+                    if actor_name and actor_name != ego and actor_name not in referenced:
+                        referenced.append(actor_name)
+                _ref(reference)
+            else:
+                # Without a reference we can't evaluate this action
+                raise ValueError("change_space_gap requires 'reference' actor")
+
+            # Add a single end-anchored check
+            checks.append(
+                (lambda target=target, direction=direction, reference=reference:
+                    (lambda F, E, N, t0, t1, C:
+                        _check_change_space_gap(F, E, reference, t0, t1, C, target, direction)))
+            )
+            
+    if name == "keep_space_gap":
+        direction = args.get("direction")
+        reference = args.get("reference")
+        if not reference:
+            raise ValueError("keep_space_gap requires 'reference' actor")
+        # register referenced NPC candidate
+        def _ref(actor_name: Optional[str]):
+            if actor_name and actor_name != ego and actor_name not in referenced:
+                referenced.append(actor_name)
+        _ref(reference)
+
+        # Enforce the sampled gap 'during' [t0..t1]
+        checks.append(
+            (lambda direction=direction, reference=reference:
+                (lambda F, E, N, t0, t1, C:
+                    _check_keep_space_gap(F, E, reference, t0, t1, C, direction)))
+        )
 
     Q = BlockQuery(
         ego=ego,

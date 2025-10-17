@@ -11,11 +11,6 @@
     ]
   },
   "enums": {
-    "lane_change_side": null,
-    "side_left_right": null,
-    "gap_direction": null,
-    "distance_direction": null,
-    "headway_direction": null,
     "movement_mode": [
       "monotonous",
       "other"
