@@ -15,6 +15,7 @@ scenario top:
     ego_start_speed: speed = 30kph
     do serial:
         get_ahead: parallel(duration: 15s):
+            ego_vehicle.change_space_gap(target: 1m, direction: ahead, reference: second_car)
             ego_vehicle.drive(12s) with:
                 lane(1)
                 speed(s)

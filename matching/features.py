@@ -12,7 +12,14 @@ LATERAL_RIGHT  = "right"
 LATERAL_SAME   = "same"
 LATERAL_UNKNOWN= "unknown"
 
-# --- add this helper near the top of features.py ---
+REL_POS_ALLOWED = {"front", "back", "unknown"}
+
+# Finite-difference settings
+DEFAULT_FPS = 10  # Hz
+DEFAULT_DT  = 1.0 / DEFAULT_FPS
+
+# --- helpers -----------------------------------------------------------------
+
 def _presence_from_s(s_list, T: int) -> Optional[np.ndarray]:
     """
     Presence = 1 when s[t] is not null (or not the literal "null"), else 0.
@@ -58,6 +65,36 @@ def _finite01(x):
     y = np.ones_like(x, dtype=float)
     y[~np.isfinite(x)] = 0.0
     return y
+
+def _accel_from_speed(v: Optional[np.ndarray], dt: float) -> np.ndarray:
+    """
+    Compute acceleration from speed using finite differences.
+    - Central difference for interior: a[t] = (v[t+1]-v[t-1])/(2*dt)
+    - Forward/backward difference at edges
+    - If neighbors are not finite, result is NaN at that index
+    """
+    if v is None:
+        return np.array([], dtype=float)
+    v = np.asarray(v, dtype=float)
+    T = v.shape[0]
+    a = np.full((T,), np.nan, dtype=float)
+    if T == 0:
+        return a
+    # interior central diff
+    if T >= 3:
+        v_prev = np.roll(v, 1)
+        v_next = np.roll(v, -1)
+        ok_c = np.isfinite(v_prev) & np.isfinite(v_next)
+        ok_c[0] = False
+        ok_c[-1] = False
+        a[ok_c] = (v_next[ok_c] - v_prev[ok_c]) / (2.0 * dt)
+    # forward at 0
+    if T >= 2 and np.isfinite(v[0]) and np.isfinite(v[1]):
+        a[0] = (v[1] - v[0]) / dt
+    # backward at T-1
+    if T >= 2 and np.isfinite(v[-1]) and np.isfinite(v[-2]):
+        a[-1] = (v[-1] - v[-2]) / dt
+    return a
 
 def segment_ids(stitched: Dict[str, Any]) -> List[str]:
     """
@@ -106,7 +143,7 @@ def segment_length(stitched: Dict[str, Any], seg_id: str) -> int:
     # Fallback: use any global long_v length
     long_v = (
         stitched.get("general_actor_activities", {})
-                .get("all_payloads", {})
+                .get("actor_activities", {})
                 .get("long_v", {})
     )
     for _actor, arr in long_v.items():
@@ -120,6 +157,7 @@ class TagFeatures:
     """Per-segment time series bundle used by the matcher."""
     segment_id: str
     num_lanes: int
+    length_m: float
     actors: List[str]
     T: int
 
@@ -130,8 +168,19 @@ class TagFeatures:
     y:     Dict[str, np.ndarray] = field(default_factory=dict)
     lane_idx: Dict[str, np.ndarray] = field(default_factory=dict)    # 1..N (0/NaN unknown)
     present:  Dict[str, np.ndarray] = field(default_factory=dict)    # 0/1 per frame
+    accel:    Dict[str, np.ndarray] = field(default_factory=dict)    # m/s^2 (finite diff of speed)
+
+    # NEW: lane-frame longitudinal/lateral kinematics (CARLA road ref frame)
+    s:        Dict[str, np.ndarray] = field(default_factory=dict)    # m (longitudinal along lane)
+    t:        Dict[str, np.ndarray] = field(default_factory=dict)    # m (lateral from centerline)
+    s_dot:    Dict[str, np.ndarray] = field(default_factory=dict)    # m/s
+    t_dot:    Dict[str, np.ndarray] = field(default_factory=dict)    # m/s
+    s_ddot:   Dict[str, np.ndarray] = field(default_factory=dict)    # m/s^2
+    t_ddot:   Dict[str, np.ndarray] = field(default_factory=dict)    # m/s^2
+    yaw_delta:Dict[str, np.ndarray] = field(default_factory=dict)    # rad (heading minus lane tangent)
 
     # per-pair series (length T)
+    rel_position: Dict[Tuple[str,str], np.ndarray] = field(default_factory=dict)   # "front"/"back"/"unknown"
     lat_rel: Dict[Tuple[str,str], np.ndarray] = field(default_factory=dict)   # "left"/"right"/"same"/"unknown"
     rel_distance: Dict[Tuple[str,str], np.ndarray] = field(default_factory=dict)  # meters
 
@@ -146,9 +195,11 @@ class TagFeatures:
         # lanes per segment
         seg_meta = (data.get("road_segments") or {}).get(seg_id, {})
         num_lanes = int(seg_meta.get("num_lanes", 0))
+        num_segments = int(seg_meta.get("num_segments", 0)) if seg_meta.get("num_segments") is not None else 0
+        length_m = float(num_segments) * 5.0
 
-        # lane IDs per actor/segment
-        seg_acts = (data.get("actor_activities_per_segment") or {}).get(seg_id, {}) or {}
+        # lane IDs per actor/segment + lane-frame kinematics (s/t, dot, ddot, yaw_delta)
+        seg_acts = (data.get("segment_actor_data") or {}).get(seg_id, {}) or {}
 
         # global kinematics (all_payloads) – organize per actor id
         payloads = (data.get("general_actor_activities") or {}).get("all_payloads") or {}
@@ -178,6 +229,16 @@ class TagFeatures:
         y:     Dict[str, np.ndarray] = {}
         lane_idx: Dict[str, np.ndarray] = {}
         present:  Dict[str, np.ndarray] = {}
+        accel:    Dict[str, np.ndarray] = {}
+
+        # NEW: lane frame series containers
+        s:        Dict[str, np.ndarray] = {}
+        t:        Dict[str, np.ndarray] = {}
+        s_dot:    Dict[str, np.ndarray] = {}
+        t_dot:    Dict[str, np.ndarray] = {}
+        s_ddot:   Dict[str, np.ndarray] = {}
+        t_ddot:   Dict[str, np.ndarray] = {}
+        yaw_delta:Dict[str, np.ndarray] = {}
 
         def _payload_for(actor: str) -> Dict[str, Any]:
             # payloads could be keyed by actor id or nested differently;
@@ -190,8 +251,10 @@ class TagFeatures:
             return {}
 
         for a in actors:
+            a_seg = seg_acts.get(a, {}) or {}
+
             # lanes
-            l = _to_np(seg_acts.get(a, {}).get("osc_lane_id"), dtype=float)
+            l = _to_np(a_seg.get("osc_lane_id"), dtype=float)
             l = _pad_or_crop(l, T, fill=np.nan)
             if l is None: l = np.full((T,), np.nan)
             lane_idx[a] = l
@@ -211,16 +274,36 @@ class TagFeatures:
             x[a]   = xx if xx is not None else np.full((T,), np.nan)
             y[a]   = yy2 if yy2 is not None else np.full((T,), np.nan)
 
-            # presence: 1 if x & y are finite, else 0
-            s_list = seg_acts.get(a, {}).get("s")
+            # presence: 1 if x & y are finite, else 0 (prefer 's' field if provided)
+            s_list = a_seg.get("s")
             pres = _presence_from_s(s_list, T)
             if pres is None:
                 pres = np.where(np.isfinite(x[a]) & np.isfinite(y[a]), 1.0, 0.0)
             present[a] = pres
 
-        # per-pair: lateral + distance
+            # acceleration from speed via finite differences
+            accel[a] = _accel_from_speed(speed[a], DEFAULT_DT)
+
+            # --- NEW: lane-frame signals from per-segment actor block ---
+            s[a]         = _pad_or_crop(_to_np(a_seg.get("s"),       dtype=float), T)
+            t[a]         = _pad_or_crop(_to_np(a_seg.get("t"),       dtype=float), T)
+            s_dot[a]     = _pad_or_crop(_to_np(a_seg.get("s_dot"),   dtype=float), T)
+            t_dot[a]     = _pad_or_crop(_to_np(a_seg.get("t_dot"),   dtype=float), T)
+            s_ddot[a]    = _pad_or_crop(_to_np(a_seg.get("s_ddot"),  dtype=float), T)
+            t_ddot[a]    = _pad_or_crop(_to_np(a_seg.get("t_ddot"),  dtype=float), T)
+            yaw_delta[a] = _pad_or_crop(_to_np(a_seg.get("yaw_delta"), dtype=float), T)
+
+            # fill Nones with NaNs so downstream code can rely on ndarray
+            if s[a]      is None: s[a]      = np.full((T,), np.nan)
+            if t[a]      is None: t[a]      = np.full((T,), np.nan)
+            if s_dot[a]  is None: s_dot[a]  = np.full((T,), np.nan)
+            if t_dot[a]  is None: t_dot[a]  = np.full((T,), np.nan)
+            if s_ddot[a] is None: s_ddot[a] = np.full((T,), np.nan)
+            if t_ddot[a] is None: t_ddot[a] = np.full((T,), np.nan)
+            if yaw_delta[a] is None: yaw_delta[a] = np.full((T,), np.nan)
+
+        # per-pair: lateral (from lanes)
         lat_rel: Dict[Tuple[str,str], np.ndarray] = {}
-        rel_distance: Dict[Tuple[str,str], np.ndarray] = {}
 
         for i in range(len(actors)):
             for j in range(len(actors)):
@@ -229,12 +312,10 @@ class TagFeatures:
                 # lateral from lane indices
                 l_e = lane_idx[e]
                 l_n = lane_idx[n]
-                #guard for none vals
                 l_n = np.asarray(l_n, dtype=float)
                 l_e = np.asarray(l_e, dtype=float)
                 lbl = np.full((T,), LATERAL_UNKNOWN, dtype=object)
                 known = np.isfinite(l_e) & np.isfinite(l_n)
-                #guard for none vals
                 gt = np.zeros_like(known, dtype=bool)
                 lt = np.zeros_like(known, dtype=bool)
                 np.greater(l_n, l_e, where=known, out=gt)  # only compare where values are finite
@@ -245,15 +326,62 @@ class TagFeatures:
                 lbl[eq] = LATERAL_SAME
                 lat_rel[(e, n)] = lbl
 
-                # distance from (x,y)
-                dx = x[e] - x[n]
-                dy = y[e] - y[n]
-                dist = np.sqrt(dx*dx + dy*dy)
-                rel_distance[(e, n)] = dist
+        # --------- per-pair rel_position + rel_distance from inter_actor_activities ---------
+        def _inter_map_for_segment(root: Dict[str, Any], seg: str) -> Dict[str, Any]:
+            # Try common layouts; pick the one your exporter actually uses.
+            if "inter_actor_activities_per_segment" in root:
+                return root["inter_actor_activities_per_segment"].get(seg, {}) or {}
+            seg_block = (root.get("segments") or {}).get(seg, {}) or {}
+            if "inter_actor_activities" in seg_block:
+                return seg_block["inter_actor_activities"] or {}
+            return root.get("inter_actor_activities", {}) or {}
+
+        inter_map = _inter_map_for_segment(data, seg_id)
+        rel_position: Dict[Tuple[str,str], np.ndarray] = {}
+        rel_distance: Dict[Tuple[str,str], np.ndarray] = {}
+
+        for e in actors:
+            for n in actors:
+                if e == n: 
+                    continue
+                pair_block = (inter_map.get(e) or {}).get(n) or {}
+
+                # --- position labels (mandatory) ---
+                pos_seq = pair_block.get("position")
+                if pos_seq is None:
+                    raise KeyError(
+                        f"[TagFeatures] Missing inter_actor_activities[{e}][{n}]['position'] for segment {seg_id}"
+                    )
+                pos_arr = np.asarray(pos_seq, dtype=object)
+                pos_arr = _pad_or_crop(pos_arr, T, fill="unknown")
+                mask_bad = ~np.isin(pos_arr, list(REL_POS_ALLOWED))
+                if np.any(mask_bad):
+                    pos_arr = pos_arr.copy()
+                    pos_arr[mask_bad] = "unknown"
+                rel_position[(e, n)] = pos_arr
+
+                # --- euclidean distance (mandatory) ---
+                dist_seq = pair_block.get("eucl_distance")
+                if dist_seq is None:
+                    dist_seq = pair_block.get("distance")
+                    if dist_seq is None:
+                        raise KeyError(
+                            f"[TagFeatures] Missing inter_actor_activities[{e}][{n}]['eucl_distance'] / ['distance'] for segment {seg_id}"
+                        )
+                dist_arr = _to_np(dist_seq, dtype=float)
+                dist_arr = _pad_or_crop(dist_arr, T, fill=np.nan)
+                if dist_arr is None:
+                    raise ValueError(
+                        f"[TagFeatures] eucl_distance empty for ({e},{n}) in segment {seg_id}"
+                    )
+                dist_arr = dist_arr.copy()
+                dist_arr[dist_arr < 0] = 0.0
+                rel_distance[(e, n)] = dist_arr
 
         return cls(
             segment_id=seg_id,
             num_lanes=num_lanes,
+            length_m=length_m,
             actors=actors,
             T=T,
             speed=speed,
@@ -262,6 +390,10 @@ class TagFeatures:
             y=y,
             lane_idx=lane_idx,
             present=present,
+            accel=accel,
+            # lane-frame series
+            s=s, t=t, s_dot=s_dot, t_dot=t_dot, s_ddot=s_ddot, t_ddot=t_ddot, yaw_delta=yaw_delta,
+            rel_position=rel_position,
             lat_rel=lat_rel,
             rel_distance=rel_distance,
         )

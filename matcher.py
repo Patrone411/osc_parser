@@ -1,6 +1,6 @@
 from osc_parser.matching.features import TagFeatures
-from osc_parser.constraints import constraints_from_ir
-from osc_parser.matching.match_single_call import spec_from_call, match_single_call
+from osc_parser.matching.constraints import constraints_from_ir
+from osc_parser.matching.match_single_call import match_single_call
 
 from . import MiniOSC2ScenarioConfig, ConfigInit, print_pytree, pytree_to_actor_constraints
 from .pytree.ir_lowering import IRLowering
