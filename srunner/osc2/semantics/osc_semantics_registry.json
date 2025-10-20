@@ -152,76 +152,69 @@
       ]
     },
     "movable_object.assign_position": {
-      "invoker_type": "movable_object",
-      "inherits": "movable_object.action_for_movable_object",
-      "overloads": [
-        {
-          "params": {
-            "position": {
-              "type": "position_3d",
-              "optional": true
-            },
-            "route_point": {
-              "type": "route_point",
-              "optional": true
-            },
-            "odr_point": {
-              "type": "odr_point",
-              "optional": true
-            }
-          },
-          "rules": {
-            "exactly_one_of": [
-              [
-                "position",
-                "route_point",
-                "odr_point"
-              ]
-            ]
-          }
+    "invoker_type": "movable_object",
+    "inherits": "movable_object.action_for_movable_object",
+    "overloads": [
+      {
+        "params": {
+          "position": { "type": "position_3d", "optional": false },
+          "duration": { "type": "time", "optional": true }
         }
-      ]
-    },
+      },
+      {
+        "params": {
+          "route_point": { "type": "route_point", "optional": false },
+          "duration": { "type": "time", "optional": true }
+        }
+      },
+      {
+        "params": {
+          "odr_point": { "type": "odr_point", "optional": false },
+          "duration":  { "type": "time", "optional": true }
+        }
+      },
+      {
+        "params": {
+          "odrPoint": { "type": "odr_point", "optional": false },
+          "duration": { "type": "time", "optional": true }
+        }
+      },
+      {
+        "params": {
+          "odr": { "type": "odr_point", "optional": false },
+          "duration": { "type": "time", "optional": true }
+        }
+      }
+    ]
+  },
     "movable_object.assign_orientation": {
       "invoker_type": "movable_object",
       "inherits": "movable_object.action_for_movable_object",
       "overloads": [
-        {
-          "params": {
-            "target": {
-              "type": "orientation_3d",
-              "optional": false
-            }
-          }
-        }
+        { "params": {
+            "target":   { "type": "orientation_3d", "optional": false },
+            "duration": { "type": "time",           "optional": true  }
+        } }
       ]
     },
     "movable_object.assign_speed": {
       "invoker_type": "movable_object",
       "inherits": "movable_object.action_for_movable_object",
       "overloads": [
-        {
-          "params": {
-            "target": {
-              "type": "speed",
-              "optional": false
-            }
-          }
-        }
+        { "params": {
+            "target":   { "type": "speed", "optional": false },
+            "duration": { "type": "time",  "optional": true  }
+        } }
       ]
     },
     "movable_object.assign_acceleration": {
       "invoker_type": "movable_object",
       "inherits": "movable_object.action_for_movable_object",
       "overloads": [
-        {
-          "params": {
-            "target": {
-              "type": "acceleration",
-              "optional": false
-            }
-          }
-        }
+        { "params": {
+            "target":   { "type": "acceleration", "optional": false },
+            "duration": { "type": "time",         "optional": true  }
+        } }
       ]
     },
     "movable_object.change_position": {

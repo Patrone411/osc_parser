@@ -12,6 +12,14 @@ except Exception:
     def LOG_ERROR(msg, token=None): raise ValueError(msg)
     def LOG_WARN(msg, token=None): print("WARN:", msg)
 
+def _flatten(seq):
+    """Flatten arbitrarily nested lists/tuples."""
+    if isinstance(seq, (list, tuple)):
+        for x in seq:
+            yield from _flatten(x)
+    else:
+        yield seq
+        
 # ---------- Public API types ----------
 
 @dataclass
@@ -85,6 +93,41 @@ def infer_type(arg: ArgValue):
         # print(f"[infer_type] {arg.name}: unknown unit '{uname}' -> None")
         return None
     
+    if isinstance(v, dict):
+        ks = {str(k).lower() for k in v.keys()}
+        # odr_point: road/lane (+ optional s/t)
+        if ({"road", "road_id", "roadid"} & ks) and ({"lane", "lane_id", "laneid"} & ks):
+            return "odr_point"
+        # position_3d: (x,y[,z]) OR (s,t[,h])
+        if {"x","y"} <= ks or {"s","t"} <= ks:
+            return "position_3d"
+        # orientation_3d: any of yaw/pitch/roll
+        if {"yaw","pitch","roll"} & ks:
+            return "orientation_3d"
+        # route_point-ish
+        if {"route_point","route","path"} & ks:
+            return "route_point"
+
+    if isinstance(v, (list, tuple)):
+        # Accept tagged tuples like ["odr_point", road, lane, s, t]
+        def _flatten(x):
+            if isinstance(x, (list, tuple)):
+                for y in x: 
+                    yield from _flatten(y)
+            else:
+                yield x
+        flat = list(_flatten(v))
+        if flat and isinstance(flat[0], str):
+            tag = flat[0].lower()
+            if tag in ("odr_point","odrpoint","odr"):
+                return "odr_point"
+            if tag in ("position","position_3d","pos"):
+                return "position_3d"
+            if tag in ("orientation","orientation_3d","ori"):
+                return "orientation_3d"
+            if tag in ("route_point","route","path"):
+                return "route_point"
+
     if isinstance(v, bool):  return "bool"
     if isinstance(v, int):
         return "uint" if v >= 0 else "int"
@@ -123,8 +166,9 @@ def _seed_required_enums(enum_map: dict):
     enum_map.setdefault("distance_direction", {"ahead", "behind"})
     enum_map.setdefault("headway_direction", {"increase", "decrease"})
     enum_map.setdefault("side_left_right", {"left", "right"})
-    enum_map.setdefault("lane_change_side", {"left", "right"})
+    enum_map.setdefault("lane_change_side", {"left", "right", "same", "same_as"})
     enum_map.setdefault("at", {"start", "end"})
+
 
 # ---------- Validator ----------
 
@@ -154,21 +198,37 @@ class SemanticValidator:
     # Normalization helpers (dicts vs. objects)
     # =====================================================================
     def _arg_type_ok(self, expected: str, arg) -> bool:
-        """Loose but practical matcher for our registry types."""
-        # unwrap ArgValue-like
         v = getattr(arg, "value", arg)
         actual = getattr(arg, "type_name", None) or (self.type_of_expr(arg) if callable(self.type_of_expr) else None)
 
-        # exact type label from hook
+        # exact match
         if actual and actual == expected:
             return True
 
-        # ----- enums (instance table only) -----
+        if expected in ("odr_point", "position_3d", "orientation_3d", "route_point"):
+            if isinstance(v, dict):
+                keys = {str(k).lower() for k in v.keys()}
+                if expected == "odr_point"     and {"road","lane","s"} <= keys: return True
+                if expected == "position_3d"   and ({"x","y"} <= keys or {"s","t"} <= keys): return True
+                if expected == "orientation_3d" and ({"yaw"} & keys or {"angle"} & keys): return True
+                if expected == "route_point"   and ({"route","path","route_point"} & keys): return True
+            if isinstance(v, (list, tuple)):
+                flat = list(_flatten(v))
+                if flat:
+                    tag = str(flat[0]).lower()
+                    if expected == "odr_point" and tag in ("odr_point", "odrpoint", "odr") and len(flat) >= 4:
+                        return True
+                    if expected == "position_3d" and tag in ("pos","position","position_3d") and len(flat) >= 3:
+                        return True
+                    if expected == "orientation_3d" and tag in ("ori","orientation","orientation_3d") and len(flat) >= 1:
+                        return True
+            
+        # -------------------------------------------------------------------------------
+
+        # enums...
         lits = self._ENUM_LITERALS.get(expected)
         if lits is not None:
-            # If registry provided the enum but gave no literals, accept anything (very permissive).
-            if not lits:
-                return True
+            if not lits: return True
             return isinstance(v, str) and v.lower() in lits
 
         # ----- physical categories by unit -----
@@ -423,64 +483,93 @@ class SemanticValidator:
 
     def _choose_action_overload(self, call: ActionCall, candidates):
         """
-        candidates: iterable of (qname, overload[, overload_name]) or object equivalents
-        call.args: dict[str, ArgValue] of supplied named args (e.g., {'duration': ArgValue(...)})
+        candidates: iterable of (qname, action_spec[, overload_name]) OR already (qname, overload[, name])
+        We evaluate each overload separately:
+        effective_params = params_from_inherits(qname)  +  params_of_this_overload
         """
-        supplied_names: Set[str] = set(call.args.keys())
+        supplied_names = set(call.args.keys())
         failures = []
+
+        def _rules_of(overload) -> Dict[str, list]:
+            if isinstance(overload, dict):
+                return overload.get("rules") or {}
+            return getattr(overload, "rules", {}) or {}
 
         for item in candidates:
             qname, ov, ov_name = self._extract_candidate(item)
             if not qname or ov is None:
                 continue
 
-            parent_params = self._params_from_inherits(qname)
-            own_params    = self._overload_params_map(ov)
-            # Child wins on conflicts
-            effective_params = {**parent_params, **own_params}
+            # Expand a candidate ActionSpec into its concrete overloads
+            cand_overloads: List[Tuple[object, str]] = []
+            if hasattr(ov, "overloads"):  # ActionSpec
+                olist = self._spec_overloads(ov) or []
+                for idx, child_ov in enumerate(olist):
+                    name = getattr(child_ov, "name", None) or f"overload[{idx}]"
+                    cand_overloads.append((child_ov, name))
+            else:
+                # Already an overload-like object/dict
+                cand_overloads.append((ov, ov_name or "<default>"))
 
-            param_names = set(effective_params.keys())
+            # Try each overload independently
+            for child_ov, child_name in cand_overloads:
+                parent_params = self._params_from_inherits(qname)     # ancestors (e.g., duration)
+                own_params    = self._overload_params_map(child_ov)   # THIS overload only
+                effective_params = {**parent_params, **own_params}
 
-            # unknown args?
-            unknown = supplied_names - param_names
-            if unknown:
-                failures.append((qname, f"unknown args: {sorted(unknown)}"))
-                continue
+                param_names = set(effective_params.keys())
+                if call.method_name == "assign_orientation":
+                    print(f"[assign_orientation] supplied= {sorted(supplied_names)}")
+                    print(f"[assign_orientation] params= {sorted(param_names)}")
+                # unknown args?
+                unknown = supplied_names - param_names
+                if unknown:
+                    failures.append((f"{qname}:{child_name}", f"unknown args: {sorted(unknown)}"))
+                    continue
 
-            # missing required?
-            required = {k for k, v in effective_params.items() if not v.get("optional", False)}
-            missing = required - supplied_names
-            if missing:
-                failures.append((qname, f"missing required: {sorted(missing)}"))
-                continue
+                # missing required? (required = not optional, and no default)
+                required = {
+                    k for k, v in effective_params.items()
+                    if not v.get("optional", False) and ("default" not in v)
+                }
+                missing = required - supplied_names
+                if missing:
+                    failures.append((f"{qname}:{child_name}", f"missing required: {sorted(missing)}"))
+                    continue
 
-            # ---- NEW: type checks for supplied args ----
-            type_mismatch = []
-            for k in supplied_names:
-                expected = effective_params.get(k, {}).get("type")
-                if expected:
-                    if not self._arg_type_ok(expected, call.args[k]):
+                # type checks
+                type_mismatch = []
+                for k in supplied_names:
+                    expected = effective_params.get(k, {}).get("type")
+                    if expected and not self._arg_type_ok(expected, call.args[k]):
                         got = call.args[k].type_name or self.type_of_expr(call.args[k])
                         type_mismatch.append((k, expected, got))
-                    else:
-                        self._dbg(f"[type-check ✓] action={qname} param={k!r} ok")
-                else:
-                    self._dbg(f"[type-check ?] action={qname} param={k!r} has no 'type' in registry")
-            if type_mismatch:
-                self._dbg(f"[type-check ✗] action={qname} mismatches={type_mismatch}")
-                failures.append((qname, f"type mismatch: {type_mismatch}"))
-                continue
-            # ---- END NEW ----
+                if type_mismatch:
+                    failures.append((f"{qname}:{child_name}", f"type mismatch: {type_mismatch}"))
+                    continue
 
-            # SUCCESS -> return normalized values (not ArgValue wrappers)
-            resolved_args = {k: v.value for k, v in call.args.items()}
-            return qname, ov, ov_name, resolved_args
+                # enforce action-level rules like exactly_one_of (if provided in this overload)
+                rules = _rules_of(child_ov)
+                if not self._check_rules_groups(rules, resolved={}, provided=supplied_names):
+                    failures.append((f"{qname}:{child_name}", f"rule violation: {rules}"))
+                    continue
 
-        # no match -> keep your current error behavior
-        LOG_ERROR(
-            f"No overload of '{call.method_name}' matches the supplied arguments: {sorted(supplied_names)}.",
-            call.token
-        )
+                # SUCCESS for this overload
+                resolved_args = {k: v.value for k, v in call.args.items()}
+
+                # fill defaults from this overload+ancestors
+                for k, ps in effective_params.items():
+                    if k not in resolved_args and "default" in ps:
+                        dv = ps["default"]
+                        if dv == "<actor>":
+                            dv = call.invoker_name
+                        resolved_args[k] = dv
+
+                return qname, child_ov, child_name, resolved_args
+
+        # No overload matched → keep your error
+        raise ValueError(f"No overload of '{call.method_name}' matches the supplied arguments: {sorted(supplied_names)}.")
+
 
     # =====================================================================
     # Variant resolution (modifiers)

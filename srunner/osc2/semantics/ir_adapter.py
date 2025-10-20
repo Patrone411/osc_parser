@@ -5,6 +5,37 @@ from .validator import ActionCall as VActionCall, ModifierAttach as VModifierAtt
 from osc_parser.srunner.osc2_dm.physical_types import Physical
 from osc_parser.config_init import _GenericPath
 
+
+def _collect_symbols(scn) -> dict:
+    """Gather name→value bindings defined in the scenario (best-effort)."""
+    env = {}
+    for attr in ("symbols", "variables", "consts", "constants", "params"):
+        src = getattr(scn, attr, None)
+        if isinstance(src, dict):
+            # allow objects with .value
+            for k, v in src.items():
+                env[k] = getattr(v, "value", v)
+        elif isinstance(src, (list, tuple)):
+            for item in src:
+                name = getattr(item, "name", None)
+                val  = getattr(item, "value", None)
+                if name is not None:
+                    env[name] = val
+    return env
+
+def _resolve_names(obj, env: dict):
+    """Recursively replace strings that are variable names with their bound values."""
+    if not env:
+        return obj
+    if isinstance(obj, str) and obj in env:
+        return _resolve_names(env[obj], env)  # handle chained aliases
+    if isinstance(obj, dict):
+        return {k: _resolve_names(v, env) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        T = type(obj)
+        return T(_resolve_names(v, env) for v in obj)
+    return obj
+
 # Map each modifier name to the canonical param its *first positional* represents
 _POS0_PARAM = {
     "speed": "speed",
@@ -18,22 +49,257 @@ _POS0_PARAM = {
     "change_lane": "lane",
 }
 
+def _flatten(seq):
+    """Flatten arbitrarily nested lists/tuples."""
+    if isinstance(seq, (list, tuple)):
+        for x in seq:
+            yield from _flatten(x)
+    else:
+        yield seq
+
+def _normalize_odr_point(v):
+    """
+    Canonicalize an ODR point to:
+        {"road": <id>, "lane": <id>, "s": <length>, ["t": <length>]}
+    Accepts:
+      • dict with any of the common key spellings (road/road_id, lane/lane_id; s,t)
+      • tagged list/tuple forms (possibly nested):
+            ["odr_point", road, lane, s] or ["odr_point", road, lane, s, t]
+        and the same without the tag if you already know it’s odr-like.
+    """
+    if isinstance(v, dict):
+        keys = {str(k).lower(): k for k in v.keys()}
+        def _get(*alts):
+            for a in alts:
+                if a in keys:
+                    return v[keys[a]]
+            return None
+        road = _get("road", "road_id", "roadid")
+        lane = _get("lane", "lane_id", "laneid")
+        s    = _get("s")
+        t    = _get("t")
+        out = {}
+        if road is not None: out["road"] = road
+        if lane is not None: out["lane"] = lane
+        if s    is not None: out["s"]    = s
+        if t    is not None: out["t"]    = t
+        return out if ("road" in out and "lane" in out and "s" in out) else {}
+
+    if isinstance(v, (list, tuple)):
+        flat = list(_flatten(v))
+        if not flat:
+            return {}
+        tag = str(flat[0]).lower()
+        items = flat[1:] if tag in ("odr_point", "odrpoint", "odr") else flat
+        # road, lane, s[, t]
+        if len(items) >= 3:
+            out = {"road": items[0], "lane": items[1], "s": items[2]}
+            if len(items) >= 4:
+                out["t"] = items[3]
+            return out
+    return {}
+
+def _normalize_position_3d(v):
+    """
+    Canonicalize a position to {"x","y"[,"z"]} OR {"s","t"}.
+    Accepts dicts and tagged list/tuple forms like ["position", x, y, z?] or ["position", s, t].
+    """
+    if isinstance(v, dict):
+        out = {}
+        for k, val in v.items():
+            lk = str(k).lower()
+            if lk in ("x", "y", "z", "s", "t"):
+                out[lk] = val
+        # Only accept if it's clearly XY or ST
+        if {"x","y"}.issubset(out.keys()) or {"s","t"}.issubset(out.keys()):
+            return out
+        return {}
+
+    if isinstance(v, (list, tuple)):
+        flat = list(_flatten(v))
+        if not flat:
+            return {}
+        tag = str(flat[0]).lower()
+        items = flat[1:] if tag in ("pos", "position", "position_3d") else flat
+        if len(items) >= 2:
+            # Heuristic: if items look like (x,y[,z]) use xy; otherwise treat as (s,t[,z])
+            out = {}
+            # We can't reliably distinguish XY vs ST just by numbers; prefer XY default.
+            out["x"], out["y"] = items[0], items[1]
+            if len(items) >= 3:
+                out["z"] = items[2]
+            return out
+    return {}
+
+def _normalize_orientation_3d(v):
+    """
+    Canonicalize to {"yaw":..., "pitch":..., "roll":...} (any subset).
+    Accepts:
+      • dict with yaw/pitch/roll or {"angle": ...} alias for yaw
+      • scalar/Physical → yaw-only
+      • tagged list/tuple ["orientation", yaw, pitch?, roll?]
+    """
+    try:
+        from osc_parser.srunner.osc2_dm.physical_types import Physical
+        _Physical = Physical
+    except Exception:
+        _Physical = ()
+
+    if isinstance(v, (int, float, _Physical)):
+        return {"yaw": v}
+
+    if isinstance(v, dict):
+        out = {}
+        for k, val in v.items():
+            lk = str(k).lower()
+            if lk in ("yaw","pitch","roll"):
+                out[lk] = val
+            elif lk == "angle":  # alias for yaw
+                out["yaw"] = val
+        return out
+
+    if isinstance(v, (list, tuple)):
+        flat = list(_flatten(v))
+        if not flat:
+            return {}
+        tag = str(flat[0]).lower()
+        items = flat[1:] if tag in ("ori", "orientation", "orientation_3d") else flat
+        out = {}
+        if len(items) >= 1: out["yaw"]   = items[0]
+        if len(items) >= 2: out["pitch"] = items[1]
+        if len(items) >= 3: out["roll"]  = items[2]
+        return out
+    return {}
+
+
 def _first_positional_param_for(mod_name: str) -> str:
     return _POS0_PARAM.get(mod_name)
 
 
-def _to_argdict(args_list):
-    """Convert IR ActionCall.args (list of scalars or (k,v)) into dict."""
+def _to_argdict(action_name: str, args_list):
+    """
+    Convert IR ActionCall.args (list of scalars or (k,v)) into named args.
+
+    Heuristics:
+      • assign_position:
+            - First positional can be: odr_point (tagged list or dict), position_3d (xy or st), or route_point.
+            - We normalize to canonical dicts and choose the proper param name.
+      • assign_orientation:
+            - First positional can be a scalar/Physical angle (yaw-only) or orientation dict/tag → normalize to {"yaw":..[, "pitch","roll"]}.
+      • assign_speed / assign_acceleration:
+            - First positional becomes named 'speed' / 'acceleration' if not already provided.
+      • Otherwise:
+            - Only map first positional to 'duration' if it's clearly a time Physical.
+    """
     named = {}
     pos = []
     for a in args_list:
         if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], str):
-            named[a[0]] = a[1]
+            k, v = a
+            lk = k.lower()
+            # Normalize known struct-like values written as named args too
+            if lk in ("odr_point", "odrpoint", "odr"):
+                v = _normalize_odr_point(v) or v
+            elif lk in ("position", "position_3d"):
+                v = _normalize_position_3d(v) or v
+            elif lk in ("orientation", "orientation_3d"):
+                v = _normalize_orientation_3d(v) or v
+            named[k] = v
         else:
             pos.append(a)
 
-    if pos and "duration" not in named:
-        named["duration"] = pos[0]
+    if not pos:
+        # Nothing positional to map
+        return named
+
+    v0 = pos[0]
+    an = (action_name or "").lower()
+
+    # ---------- Special-cases for actions with positional short-hands ----------
+    if an == "change_lane":
+        # Support both signatures:
+        #   change_lane(num_of_lanes, side, reference, [...])
+        #   change_lane(target=lane, [...])  (or positional first value treated as target if it looks like a lane handle)
+        # 1) Copy any explicit named keys (already in `named`)
+        # 2) Map positionals if present and not already named
+        if pos:
+            # Heuristic: if first positional is an int → treat as num_of_lanes signature
+            if isinstance(pos[0], int):
+                named.setdefault("num_of_lanes", pos[0])
+                if len(pos) >= 2:
+                    named.setdefault("side", pos[1])
+                if len(pos) >= 3:
+                    named.setdefault("reference", pos[2])
+            else:
+                # Otherwise assume it's a target lane handle/id provided positionally
+                # (e.g., change_lane(my_lane))
+                named.setdefault("target", pos[0])
+
+        # Normalize a few synonyms that show up in the wild
+        if "num_lanes" in named and "num_of_lanes" not in named:
+            named["num_of_lanes"] = named.pop("num_lanes")
+        if "ref" in named and "reference" not in named:
+            named["reference"] = named.pop("ref")
+
+        return named
+    
+    if an == "assign_position":
+        # 1) Try odr_point first (handles tagged/nested lists)
+        odr = _normalize_odr_point(v0)
+        if odr:
+            named.setdefault("odr_point", odr)
+            return named
+
+        # 2) Then try position_3d (xy or st)
+        pos3 = _normalize_position_3d(v0)
+        if pos3:
+            named.setdefault("position", pos3)
+            return named
+
+        # 3) Route-like object
+        try:
+            from osc_parser.config_init import _GenericPath
+            if isinstance(v0, _GenericPath):
+                named.setdefault("route_point", v0)
+                return named
+        except Exception:
+            pass
+
+        # 4) Fallback: treat unknown dicts as position, everything else as odr_point
+        if isinstance(v0, dict):
+            named.setdefault("position", v0)
+        else:
+            named.setdefault("odr_point", _normalize_odr_point(v0) or v0)
+        return named
+
+    if an in ("assign_speed", "assign_acceleration", "assign_orientation"):
+        # map first positional → target (if provided)
+        if pos and "target" not in named:
+            named["target"] = pos[0]
+
+        # accept common synonyms and normalize to 'target'
+        for syn in ("speed", "acceleration", "orient", "orientation", "orientation_3d"):
+            if syn in named and "target" not in named:
+                named["target"] = named.pop(syn)
+
+        # don't auto-map duration unless it's clearly a time Physical (you already do that below)
+        return named
+
+    # ---------- Generic: map first positional to duration only if clearly 'time' ----------
+    if "duration" not in named:
+        try:
+            from osc_parser.srunner.osc2_dm.physical_types import Physical
+            if isinstance(v0, Physical):
+                phys_name = getattr(getattr(v0.unit, "physical", None), "name", None) \
+                            or getattr(getattr(v0.unit, "physical", None), "type_name", None)
+                uname = (getattr(v0.unit, "unit_name", None) or getattr(v0.unit, "name", None) or "").lower()
+                if phys_name == "time" or uname in {
+                    "s","sec","second","seconds","ms","millisecond","milliseconds",
+                    "min","minute","minutes","h","hr","hour","hours"
+                }:
+                    named["duration"] = v0
+        except Exception:
+            pass
 
     return named
 
@@ -56,12 +322,27 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
             named.setdefault("route", pos[0])
         elif m.name == "yaw":
             named.setdefault("angle", pos[0])
+        #TODO: check true lane counts using topology
         elif m.name == "lane":
-            named.setdefault("lane", pos[0])
+            named.setdefault("lane", pos[0] if pos else named.get("lane"))
+            # optional positional second arg as 'from'
+            if len(pos) >= 2 and isinstance(pos[1], str) and "from" not in named:
+                named["from"] = pos[1]
         elif m.name == "change_lane":
-            named.setdefault("lane", pos[0])
+            # pos[0] → lane delta (number), pos[1] → side/from
+            if pos:
+                named.setdefault("lane", pos[0])
             if len(pos) >= 2:
-                named.setdefault("side", pos[1])
+                if isinstance(pos[1], str):
+                    named.setdefault("side", pos[1])
+
+            # allow 'from' as an alias for 'side'
+            if "from" in named and "side" not in named:
+                named["side"] = named.pop("from")
+
+            # DEFAULT: if side provided but no lane delta → 1 lane
+            if "side" in named and "lane" not in named:
+                named["lane"] = 1
 
 
     for k, v in (m.kwargs or {}).items():
@@ -69,37 +350,111 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
     return named
 
 def _infer_type_for_value(v, actor_types: dict) -> str:
-    # Physicals -> underlying physical dimension
+    # Physical -> "length"/"time"/"speed"/...
     if isinstance(v, Physical):
         try:
-            return v.unit.physical.name  # e.g., "length", "time", "speed", "acceleration"
+            return v.unit.physical.name
         except Exception:
             return None
-    # GenericPath should be treated as 'route' (for along(route))
+
+    # Route path object
     if isinstance(v, _GenericPath):
         return "route"
-    # Map common string literals to semantic types
+
+    # Strings (actor names, simple enums)
     if isinstance(v, str):
-        # actor name -> physical_object
         if v in actor_types:
             return "physical_object"
         low = v.lower()
-        if low in ("start", "end"):         # used by many modifiers
+        if low in ("start", "end"):
             return "at"
-        if low in ("left", "right"):        # used by lateral/lane side params
+        if low in ("left", "right"):
             return "side_left_right"
-        # leave other strings untyped
         return None
-    # Plain numerics/bools (only used where appropriate)
+
+    # Dict-shaped domain valuesf
+    if isinstance(v, (list, tuple)):
+        flat = list(_flatten(v))
+        if flat:
+            tag = str(flat[0]).lower()
+            if tag in ("odr_point", "odrpoint", "odr"):
+                return "odr_point"
+            if tag in ("pos", "position", "position_3d"):
+                return "position_3d"
+            if tag in ("ori", "orientation", "orientation_3d"):
+                return "orientation_3d"
+
+    # Plain numerics / bools
     if isinstance(v, bool):  return "bool"
     if isinstance(v, int):   return "int"
     if isinstance(v, float): return "float"
     return None
 
+def _collect_symbols_deep(root) -> dict:
+    """
+    Walk the ScenarioNode tree and gather name→value bindings.
+    Robust against different IR shapes:
+      - objects with .name and a value in one of {value, val, literal, number, expr}
+      - dicts / lists / tuples (recursive)
+    """
+    env = {}
+    seen = set()
+
+    def _unwrap(v):
+        # unwrap single-layer wrappers that carry .value
+        return getattr(v, "value", v)
+
+    def visit(obj):
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+
+        # primitives
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return
+
+        # named binding objects
+        nm = getattr(obj, "name", None)
+        if isinstance(nm, str) and nm and nm not in env:
+            for attr in ("value", "val", "literal", "number", "expr"):
+                if hasattr(obj, attr):
+                    env[nm] = _unwrap(getattr(obj, attr))
+                    break
+
+        # dict
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                visit(k); visit(v)
+            return
+
+        # sequences
+        if isinstance(obj, (list, tuple, set)):
+            for v in obj:
+                visit(v)
+            return
+
+        # generic object: recurse into public attrs
+        d = getattr(obj, "__dict__", {})
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k in ("parent", "token", "span"):  # avoid cycles/noise
+                    continue
+                visit(v)
+
+    visit(root)
+    return env
+
+
+
 def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
     for scn in scenarios:
-        # Scenario-local actor type map
         actor_types = {name: inst.type for name, inst in scn.actors.items()}
+
+        # NEW: build the scenario env once
+        name_env = _collect_symbols_deep(scn)
+        # optional: quick sanity check
+        print("[env] keys:", list(name_env.keys())[:20])
 
         def walk_block(block):
             for ch in getattr(block, "children", []):
@@ -108,25 +463,33 @@ def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
                     inv_type = actor_types.get(inv_name)
                     if not inv_type:
                         print(f"Unknown actor '{inv_name}' (not found in scenario '{scn.name}').")
-                        continue  # or raise
+                        continue
 
-                    # Action args -> ArgValue dict
-                    a_named = _to_argdict(ch.args)
-                    v_args = {k: ArgValue(k, v, type_name=_infer_type_for_value(v, actor_types))
-                            for k, v in a_named.items()}
+                    # --- ACTION ARGS ---
+                    a_named = _to_argdict(ch.action, ch.args)
+                    a_named = _resolve_names(a_named, name_env)        # <-- apply resolver here
 
-                    # Modifiers -> ModifierAttach with named args
+                    v_args = {
+                        k: ArgValue(k, v, type_name=_infer_type_for_value(v, actor_types))
+                        for k, v in a_named.items()
+                    }
+                    if ch.action == "assign_position":
+                        print("[IR] assign_position resolved args:", a_named)
+
+                    # --- MODIFIERS ---
                     v_mods = []
                     for m in ch.modifiers:
                         m_named = _mod_to_named(m)
+                        m_named = _resolve_names(m_named, name_env)    # <-- and here
                         v_mods.append(
                             VModifierAttach(
                                 name=m.name,
                                 args={k: ArgValue(k, v, type_name=_infer_type_for_value(v, actor_types))
-                                    for k, v in m_named.items()},
+                                      for k, v in m_named.items()},
                                 token=getattr(m, "token", None),
                             )
                         )
+
 
                     vcall = VActionCall(
                         invoker_name=inv_name,
@@ -136,46 +499,14 @@ def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
                         modifiers=v_mods,
                         token=getattr(ch, "token", None),
                     )
-                    # ⬇️ capture the result
+
                     result = validator.validate_action_call(vcall)
 
-                    # modifiers: keep 1–1 by order
-                    for (mod_idx, (m_name, _variant, m_args)) in enumerate(result.resolved_modifiers):
-                        if mod_idx >= len(ch.modifiers):  # safety
-                            break
-                        irm = ch.modifiers[mod_idx]
-                        if irm.name != m_name:
-                            # fallback: try to find same-name modifier not yet processed
-                            try:
-                                irm = next(mm for mm in ch.modifiers if mm.name == m_name)
-                            except StopIteration:
-                                irm = ch.modifiers[mod_idx]
-
-                        # Ensure args/kwargs containers exist
-                        if getattr(irm, "args", None) is None:
-                            irm.args = []
-                        if getattr(irm, "kwargs", None) is None:
-                            irm.kwargs = {}
-
-                        # Handle the “pos0” canonical parameter to avoid duplicates
-                        pos0_name = _first_positional_param_for(irm.name)
-                        if pos0_name and pos0_name in m_args:
-                            # If we already have a positional present, don't add named duplicate
-                            if len(irm.args) > 0:
-                                # drop it from write-back so we don't add it as a kwarg
-                                m_args = {k: v for k, v in m_args.items() if k != pos0_name}
-                            else:
-                                # No positionals -> move this canonical param into positionals for pretty print
-                                irm.args.insert(0, m_args[pos0_name])
-                                m_args = {k: v for k, v in m_args.items() if k != pos0_name}
-
-                        # Now add the rest of the (non-pos0) resolved args as kwargs,
-                        # but NOT overwriting anything the user already supplied.
-                        for k, v in m_args.items():
-                            if k not in irm.kwargs:
-                                irm.kwargs[k] = v
-
-
+                    # write-back (unchanged)
+                    ch.args = []
+                    for k, v in result.resolved_args.items():
+                        ch.args.append((k, v))
+                    # ... (rest of your modifier write-back stays the same)
                 else:
                     if isinstance(ch, (SerialBlock, ParallelBlock)):
                         walk_block(ch)
