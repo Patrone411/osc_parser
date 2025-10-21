@@ -52,26 +52,41 @@ _TIME_UNITS = {
     "h": 3600.0, "hr": 3600.0, "hour": 3600.0, "hours": 3600.0,
 }
 
+_ACCEL_UNITS = {
+    "m/s^2": 1.0, "mps2": 1.0,
+    "km/h/s": 1000.0/3600.0, "kph/s": 1000.0/3600.0,
+}
+
+_JERK_UNITS = {
+    "m/s^3": 1.0, "mps3": 1.0,
+}
+
 _DEFAULT_CFG = {
+
     # presence & coverage
     "presence_min_coverage": 0.9,
     "presence_allow_missing": 0,  # number of frames allowed missing (None to use coverage ratio instead)
     "speed_min_coverage": 0.9,    # also used for distance coverage unless you add a dedicated key
+
     # tolerances
     "speed_value_tol": 0.10,      # m/s
     "distance_tol": 2.0,          # m
     "change_speed_tol": 0.30,     # m/s
+
     # lateral / relation
     "relation_snap_radius": 1,    # (placeholder)
     "lateral_allow_missing": True,
+
     # duration handling
     "allow_shorter_end": True,
     "default_window_s": 5.0,
+
     # during semantics (window checks)
-    "during_mode": "coverage",     # "coverage" (fraction) or "all" (strict ∀t)
+    "during_mode": "all",
     "during_max_false": 0,         # only used if during_mode == "all"
     "st_reach_tol_s": 1.0,
     "st_reach_tol_t": 0.5,
+
     # assign_orientation tolerance (radians)
     "yaw_reach_tol": 0.05,  # ≈ 2.9°
     "accel_value_tol": 0.2,  # m/s^2
@@ -79,6 +94,7 @@ _DEFAULT_CFG = {
     "keep_speed_tol": 0.20,   # m/s deviation allowed from sampled speed
     "jerk_value_tol": 0.2,     # m/s^3 tolerance when checking rate_peak
     "accel_min_coverage": 0.9,     # coverage when during_mode == "coverage"
+
     # --- lane following knobs ---
     "lane_follow_mode": "all",
     "lane_follow_allow_false": 0,
@@ -149,7 +165,7 @@ def _check_change_lane_action(
 def _norm_physical(d: Dict[str, Any], kind: str) -> Dict[str, Any]:
     """
     Normalize {"value":..,"unit":..} / {"range":[lo,hi],"unit":..} to SI.
-    kind ∈ {"speed","angle","distance"}.
+    kind ∈ {"speed","angle","distance","acceleration","jerk"}.
     """
     if not d:
         return {}
@@ -161,6 +177,10 @@ def _norm_physical(d: Dict[str, Any], kind: str) -> Dict[str, Any]:
             return {"value": v * _ANGLE_UNITS.get(u, 1.0), "unit": "rad"}
         if kind == "distance":
             return {"value": v * _DISTANCE_UNITS.get(u, 1.0), "unit": "m"}
+        if kind == "acceleration":
+            return {"value": v * _ACCEL_UNITS.get(u, 1.0), "unit": "m/s^2"}
+        if kind == "jerk":
+            return {"value": v * _JERK_UNITS.get(u, 1.0), "unit": "m/s^3"}
     if "range" in d:
         lo, hi = d["range"]; u = str(d.get("unit", "")).lower()
         if kind == "speed":
@@ -169,6 +189,10 @@ def _norm_physical(d: Dict[str, Any], kind: str) -> Dict[str, Any]:
             s = _ANGLE_UNITS.get(u, 1.0); return {"range": [float(lo)*s, float(hi)*s], "unit": "rad"}
         if kind == "distance":
             s = _DISTANCE_UNITS.get(u, 1.0); return {"range": [float(lo)*s, float(hi)*s], "unit": "m"}
+        if kind == "acceleration":
+            s = _ACCEL_UNITS.get(u, 1.0); return {"range": [float(lo)*s, float(hi)*s], "unit": "m/s^2"}
+        if kind == "jerk":
+            s = _JERK_UNITS.get(u, 1.0); return {"range": [float(lo)*s, float(hi)*s], "unit": "m/s^3"}
     return d
 
 def _anchor_index(t0: int, t1: int, at: Optional[str]) -> int:
@@ -331,6 +355,7 @@ def _check_speed(feats, ego, npc, t0, t1, cfg, arg_speed: Dict[str, Any], at: Op
         return (v[ti] >= lo) and (v[ti] <= hi)
     # during window
     sl = slice(t0, t1 + 1)
+    
     mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     if mode == "coverage":
         cov = _coverage_ratio(v[sl], lo, hi)
@@ -437,7 +462,7 @@ def _check_change_speed(feats, ego, npc, t0, t1, cfg, delta_speed: Dict[str, Any
 def _check_acceleration(feats, ego, npc, t0, t1, cfg, accel_arg: Dict[str, Any], at: Optional[str]) -> bool:
     a = _get(feats.accel, ego)
     if a.size == 0: return False
-    spec = accel_arg or {}
+    spec = _norm_physical(accel_arg or {}, "acceleration") 
     if at:
         ti = _anchor_index(t0, t1, at)
         if ti >= a.size or not np.isfinite(a[ti]): return False
@@ -465,7 +490,59 @@ def _check_yaw_delta(feats, ego, npc, t0, t1, cfg, angle_arg: Dict[str, Any], at
     lo, hi = _val_or_range_to_bounds(spec, tol=0.0)
     return (ydel[ti] >= lo) and (ydel[ti] <= hi)
 
-def _check_distance(feats, ego, npc, t0, t1, cfg, dist_arg: Dict[str, Any], at: Optional[str]) -> bool:
+def _check_distance_traveled(
+    feats,
+    ego: str,
+    npc: Optional[str],
+    t0: int,
+    t1: int,
+    cfg: Dict[str, Any],
+    dist_arg: Dict[str, Any],
+) -> bool:
+    """
+    Movement modifier distance:
+      - Enforce that the distance traveled by 'ego' in [t0..t1] matches target.
+      - Prefer Frenet s: d = |s[t1] - s[t0]|.
+      - Optional fallback to XY arc length (accumulate segment lengths).
+    """
+    # 1) interpret target bounds (meters)
+    spec = _norm_physical(dist_arg or {}, "distance")
+    lo, hi = _val_or_range_to_bounds(spec, tol=float(cfg.get("distance_tol", 2.0)))
+
+    # 2) prefer Frenet s difference
+    s = getattr(feats, "s", {}).get(ego)
+    pres = _get(feats.present, ego)
+    if s is not None and t0 < len(s) and t1 < len(s):
+        if pres.size and (t0 < pres.size and t1 < pres.size):
+            if not (pres[t0] > 0.5 and pres[t1] > 0.5):
+                # fall back to XY or fail
+                pass
+        s0, s1 = float(s[t0]), float(s[t1])
+        if np.isfinite(s0) and np.isfinite(s1):
+            d = abs(s1 - s0)
+            return (d >= lo) and (d <= hi)
+
+    # 3) fallback: accumulate XY segment lengths where present & finite
+    x = _get(feats.x, ego); y = _get(feats.y, ego)
+    if x.size and y.size and (t1 < x.size) and (t1 < y.size):
+        sl = slice(t0, t1 + 1)
+        xi = np.asarray(x[sl], dtype=float)
+        yi = np.asarray(y[sl], dtype=float)
+        pres = _get(feats.present, ego)[sl] > 0.5
+        finite = np.isfinite(xi) & np.isfinite(yi)
+        idx = np.where(pres & finite)[0]
+        if idx.size >= 2:
+            dsum = 0.0
+            for k in range(idx.size - 1):
+                i, j = idx[k], idx[k + 1]
+                dx = xi[j] - xi[i]
+                dy = yi[j] - yi[i]
+                dsum += float(np.hypot(dx, dy))
+            return (dsum >= lo) and (dsum <= hi)
+
+    return False
+
+"""def _check_distance(feats, ego, npc, t0, t1, cfg, dist_arg: Dict[str, Any], at: Optional[str]) -> bool:
     if npc is None: return False
     d = feats.rel_distance.get((ego, npc))
     if d is None: return False
@@ -484,7 +561,7 @@ def _check_distance(feats, ego, npc, t0, t1, cfg, dist_arg: Dict[str, Any], at: 
     else:
         max_false = int(cfg.get("during_max_false", _DEFAULT_CFG["during_max_false"]))
         pres = _get(feats.present, ego)[sl]  # or AND ego&npc if you prefer
-        return _all_during_in_range(np.asarray(d[sl], dtype=float), lo, hi, pres=pres, max_false=max_false)
+        return _all_during_in_range(np.asarray(d[sl], dtype=float), lo, hi, pres=pres, max_false=max_false)"""
 
 def _check_speed_same_as(feats, ego, npc, t0, t1, cfg, at: Optional[str]) -> bool:
     if npc is None: return False
@@ -622,7 +699,7 @@ def _check_keep_space_gap(
     sl = slice(t0, t1 + 1)
 
     tol = float(cfg.get("space_gap_tol", cfg.get("distance_tol", 2.0)))
-    during_mode = str(cfg.get("during_mode", "coverage")).lower()
+    during_mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     during_max_false = int(cfg.get("during_max_false", 0))
     cov_need = float(cfg.get("speed_min_coverage", 0.9))  # reuse coverage threshold
 
@@ -793,10 +870,11 @@ def _check_assign_orientation_yaw(
     assign_orientation: evaluate only yaw; action ends when yaw reaches target.
     End-anchored check: |wrap(yaw[t1] - yaw_target)| <= yaw_reach_tol
     """
-    if not isinstance(yaw_arg, dict):
-        return False
-    spec = _norm_physical(yaw_arg, "angle")
-    if "value" not in spec:
+    if isinstance(yaw_arg, (int, float)):
+        spec = {"value": float(yaw_arg), "unit": "rad"}
+    elif isinstance(yaw_arg, dict):
+        spec = _norm_physical(yaw_arg, "angle")
+    else:
         return False
     yaw_target = float(spec["value"])
     tol = float(cfg.get("yaw_reach_tol", 0.05))
@@ -956,7 +1034,7 @@ def _check_keep_speed(
     ok_series = np.zeros_like(eval_mask, dtype=bool)
     ok_series[eval_mask] = np.abs(v_win[eval_mask] - v0) <= tol
 
-    during_mode = str(cfg.get("during_mode", "coverage")).lower()
+    during_mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     if during_mode == "coverage":
         need = float(cfg.get("speed_min_coverage", 0.9))
         cov = float(np.sum(ok_series) / np.sum(eval_mask))
@@ -1081,7 +1159,8 @@ def _check_keep_acceleration(
     ok_series = np.zeros_like(eval_mask, dtype=bool)
     ok_series[eval_mask] = np.abs(a_win[eval_mask] - a0) <= tol
 
-    during_mode = str(cfg.get("during_mode", "coverage")).lower()
+    during_mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
+
     if during_mode == "coverage":
         need = float(cfg.get("accel_min_coverage", cfg.get("speed_min_coverage", 0.9)))
         cov = float(np.sum(ok_series) / np.sum(eval_mask))
@@ -1251,28 +1330,23 @@ def _check_keep_time_headway(
         known = (pos_win == "front") | (pos_win == "back")
         orient_ok = (~known) | (pos_win == need_str)
 
-    # numeric headway magnitude over window
-    T = feats.T
-    idxs = np.arange(t0, t1 + 1, dtype=int)
-    h_series = []
-    eval_mask = np.zeros_like(idxs, dtype=bool)
+    # numeric headway magnitude over window (no feats.T dependency)
+    idxs = list(range(t0, t1 + 1))
+    eval_mask = np.zeros(len(idxs), dtype=bool)
+    h_arr = np.full(len(idxs), np.nan, dtype=float)
     for k, ti in enumerate(idxs):
-        if ti < 0 or ti >= T:
-            continue
         if not pres_win[k]:
             continue
         h = _headway_time_mag(feats, ego, npc, ti, min_speed=min_speed)
         if h is None:
             continue
-        h_series.append(h)
+        h_arr[k] = h
         eval_mask[k] = True
     if not np.any(eval_mask):
         return False
 
     # compare magnitudes within tolerance
     tol = float(cfg.get("time_headway_tol", 0.30))
-    h_arr = np.full_like(idxs, np.nan, dtype=float)
-    h_arr[eval_mask] = np.array([_headway_time_mag(feats, ego, npc, ti, min_speed=min_speed) for ti in idxs[eval_mask]])
     mag_ok = np.zeros_like(eval_mask, dtype=bool)
     mag_ok[eval_mask] = np.abs(h_arr[eval_mask] - h0_mag) <= tol
 
@@ -1280,7 +1354,7 @@ def _check_keep_time_headway(
     if orient_ok is not None:
         ok = ok & orient_ok
 
-    during_mode = str(cfg.get("during_mode", "coverage")).lower()
+    during_mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     if during_mode == "coverage":
         need = float(cfg.get("headway_min_coverage", 0.85))
         cov = float(np.sum(ok & eval_mask) / np.sum(eval_mask))
@@ -1315,7 +1389,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
     Translate one normalized call (from constraints_from_ir) into a BlockQuery.
     """
     cfg = {**_DEFAULT_CFG, **(cfg or {})}
-
+    cfg.setdefault("fps", float(fps))
     ego = call.get("actor")
     if not ego:
         raise ValueError("build_block_query: missing 'actor' in call")
@@ -1341,7 +1415,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
     # always gate by presence coverage
     checks.append(lambda F, E, N, t0, t1, C: _check_presence(F, E, N, t0, t1, C))
 
-        # --- ACTION ARGUMENTS (not modifiers) ---
+    # --- ACTION ARGUMENTS (not modifiers) ---
     action_name = str(call.get("action", "")).lower()
     aargs = (call.get("action_args") or {})
 
@@ -1373,7 +1447,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                     _check_change_lane_action(F, E, N, t0, t1, C, target_lane, a_num, a_side, a_ref)))
         )
     
-    if action_name == "assign_position":
+    elif action_name == "assign_position":
         pos_arg  = aargs.get("position")
         rp_arg   = aargs.get("route_point")
         odr_arg  = aargs.get("odr_point")
@@ -1418,19 +1492,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             # else: leave for future ODR resolution (no check added)
         else:
             raise ValueError("assign_position target must include (x,y) or (s,t), or be an ODR dict with road/lane/(s,t)")
-
-    elif action_name == "assign_orientation":
-        orient = aargs.get("orientation") or aargs.get("orientation_3d") or {}
-        if not isinstance(orient, dict):
-            raise ValueError("assign_orientation requires an orientation dict")
-        yaw_arg = orient.get("yaw")
-        if yaw_arg is None:
-            raise ValueError("assign_orientation: only yaw is supported currently (missing 'yaw')")
-        checks.append(
-            (lambda yaw_arg=yaw_arg:
-                (lambda F, E, N, t0, t1, C:
-                    _check_assign_orientation_yaw(F, E, N, t0, t1, C, yaw_arg)))
-        )
+        
 
     elif action_name == "change_space_gap":
         target = aargs.get("target")
@@ -1514,7 +1576,8 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
     elif action_name == "keep_acceleration":
         checks.append((lambda: (lambda F, E, N, t0, t1, C: _check_keep_acceleration(F, E, N, t0, t1, C)))())
 
-    if action_name == "assign_speed":
+    # --- assign_speed ---
+    elif action_name == "assign_speed":
         # accept new 'target' and legacy 'speed'
         speed_arg = aargs.get("target") or aargs.get("speed")
         if speed_arg is None:
@@ -1552,8 +1615,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                 (lambda F, E, N, t0, t1, C:
                     _check_assign_orientation_yaw(F, E, N, t0, t1, C, yaw_arg)))
         )
-
-
+    
     # --- translate modifiers ---
     for m in (call.get("modifiers") or []):
         name = str(m.get("name", "")).lower()
@@ -1601,16 +1663,6 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                 other = args.get("same_as"); _ref(other)
                 checks.append(lambda other=other, at=at:
                               (lambda F, E, N, t0, t1, C: _check_lane_same_as(F, E, other, t0, t1, C, at)))
-            elif "side_of" in args and "side" in args:
-                other = args.get("side_of"); _ref(other)
-                side = args.get("side")
-                lane = args.get("lane")  # optional
-                checks.append(lambda other=other, side=side, lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_side_of(F, E, other, t0, t1, C, lane, side, at)))
-            elif "lane" in args:
-                lane = int(args.get("lane"))
-                checks.append(lambda lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_number(F, E, N, t0, t1, C, lane, at)))
                 
             elif "side_of" in args and "side" in args:
                 other = args.get("side_of"); _ref(other)
@@ -1671,202 +1723,22 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                           (lambda F, E, N, t0, t1, C: _check_yaw_delta(F, E, N, t0, t1, C, ang, at)))
 
         elif name == "distance":
-            at = args.get("at")
-            other = args.get("to"); _ref(other)
+            # Spec: distance traveled over the window, NOT spacing to another actor
             dist = args.get("distance") or {}
-            checks.append(lambda other=other, dist=dist, at=at:
-                          (lambda F, E, N, t0, t1, C: _check_distance(F, E, other, t0, t1, C, dist, at)))
-
-        
-        elif action_name == "change_space_gap":
-            target = aargs.get("target")
-            direction = aargs.get("direction")
-            reference = aargs.get("reference")
-            if reference:
-                if reference != ego and reference not in referenced:
-                    referenced.append(reference)
-            else:
-                raise ValueError("change_space_gap requires 'reference' actor")
             checks.append(
-                (lambda target=target, direction=direction, reference=reference:
+                (lambda dist=dist:
                     (lambda F, E, N, t0, t1, C:
-                        _check_change_space_gap(F, E, reference, t0, t1, C, target, direction)))
+                        _check_distance_traveled(F, E, N, t0, t1, C, dist)))
             )
-            
-        if name == "keep_space_gap":
-            direction = args.get("direction")
-            reference = args.get("reference")
-            if not reference:
-                raise ValueError("keep_space_gap requires 'reference' actor")
-            # register referenced NPC candidate
-            def _ref(actor_name: Optional[str]):
-                if actor_name and actor_name != ego and actor_name not in referenced:
-                    referenced.append(actor_name)
-            _ref(reference)
-
-            # Enforce the sampled gap 'during' [t0..t1]
-            checks.append(
-                (lambda direction=direction, reference=reference:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_keep_space_gap(F, E, reference, t0, t1, C, direction)))
-            )
-
-        elif action_name == "assign_position":
-            pos_arg  = aargs.get("position")
-            rp_arg   = aargs.get("route_point")
-            odr_arg  = aargs.get("odr_point") or aargs.get("odrPoint") or aargs.get("odr")
-
-            provided = [x for x in (pos_arg, rp_arg, odr_arg) if x is not None]
-            if len(provided) != 1:
-                raise ValueError("assign_position requires exactly one of {position, route_point, odr_point}")
-
-            target = provided[0]
-            if not isinstance(target, dict):
-                raise ValueError("assign_position target must be a dict containing either (x,y) or (s,t)")
-
-            if ("x" in target) and ("y" in target):
-                scale = _parse_unit_scale(target)
-                xt = float(target["x"]) * scale
-                yt = float(target["y"]) * scale
-                checks.append(
-                    (lambda xt=xt, yt=yt:
-                        (lambda F, E, N, t0, t1, C:
-                            _check_assign_position_xy(F, E, N, t0, t1, C, xt, yt)))
-                )
-            elif ("s" in target) and ("t" in target):
-                scale = _parse_unit_scale(target)
-                st = float(target["s"]) * scale
-                tt = float(target["t"]) * scale
-                checks.append(
-                    (lambda st=st, tt=tt:
-                        (lambda F, E, N, t0, t1, C:
-                            _check_assign_position_st(F, E, N, t0, t1, C, st, tt)))
-                )
-            else:
-                raise ValueError("assign_position target must include either keys (x,y) or (s,t)")
-
-        # --- assign_orientation ---
-        if name == "assign_orientation":
-            orient = args.get("orientation") or {}
-            if not isinstance(orient, dict):
-                raise ValueError("assign_orientation requires 'orientation' dict")
-            yaw_arg = orient.get("yaw")
-            if yaw_arg is None:
-                raise ValueError("assign_orientation: only yaw is supported currently (missing 'yaw')")
-            checks.append(
-                (lambda yaw_arg=yaw_arg:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_assign_orientation_yaw(F, E, N, t0, t1, C, yaw_arg)))
-            )
-        
-        # --- assign_speed ---
-        if name == "assign_speed":
-            speed_arg = args.get("speed")
-            if speed_arg is None:
-                raise ValueError("assign_speed requires 'speed' (e.g., {'value': 35, 'unit': 'kph'})")
-            checks.append(
-                (lambda speed_arg=speed_arg:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_assign_speed(F, E, N, t0, t1, C, speed_arg)))
-            )
-
-        # --- assign_acceleration ---
-        if name == "assign_acceleration":
-            accel_arg = args.get("acceleration")
-            if accel_arg is None:
-                # allow a short alias if you like
-                accel_arg = args.get("accel")
-            if accel_arg is None:
-                raise ValueError("assign_acceleration requires 'acceleration' (e.g., {'value': 1.0, 'unit': 'm/s^2'})")
-            checks.append(
-                (lambda accel_arg=accel_arg:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_assign_acceleration(F, E, N, t0, t1, C, accel_arg)))
-            )
-
-        # --- remain_stationary ---
-        if name == "remain_stationary":
-            # Enforce stationarity over the entire window [t0..t1]
-            checks.append(
-                (lambda: (lambda F, E, N, t0, t1, C: _check_remain_stationary(F, E, N, t0, t1, C)))()
-            )
-
+    
         # --- keep_speed ---
-        if name == "keep_speed":
+        elif name == "keep_speed":
             # Enforce that the sampled speed at t0 is maintained during [t0..t1]
             checks.append(
                 (lambda: (lambda F, E, N, t0, t1, C: _check_keep_speed(F, E, N, t0, t1, C)))()
             )
 
-        Q_cfg = cfg or {}
-        Q_cfg.setdefault("fps", 10)
-
-        # --- change_acceleration ---
-        if name == "change_acceleration":
-            target = args.get("target") or args.get("acceleration")
-            if target is None:
-                raise ValueError("change_acceleration requires 'target' acceleration")
-
-            rate_profile = args.get("rate_profile")  # parsed but not enforced for shape
-            rate_peak = args.get("rate_peak")        # optional jerk peak
-
-            checks.append(
-                (lambda target=target, rate_profile=rate_profile, rate_peak=rate_peak:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_change_acceleration(F, E, N, t0, t1, C, target, rate_profile, rate_peak)))
-            )
-
-        # --- keep_acceleration ---
-        if name == "keep_acceleration":
-            # Hold the sampled acceleration during [t0..t1]
-            checks.append(
-                (lambda: (lambda F, E, N, t0, t1, C: _check_keep_acceleration(F, E, N, t0, t1, C)))()
-            )
-
-        # --- follow_lane ---
-        elif action_name == "follow_lane":
-            target_lane = aargs.get("target")
-            if isinstance(target_lane, dict) and "lane" in target_lane:
-                target_lane = target_lane.get("lane")
-            if target_lane is not None:
-                target_lane = int(target_lane)
-            checks.append(
-                (lambda target_lane=target_lane:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_follow_lane(F, E, N, t0, t1, C, target_lane)))
-            )
-        # --- change_time_headway ---
-        if name == "change_time_headway":
-            target = args.get("target")
-            direction = args.get("direction")
-            reference = args.get("reference")
-            if target is None or direction is None or reference is None:
-                raise ValueError("change_time_headway requires 'target', 'direction', and 'reference'")
-            # register NPC candidate
-            if reference and reference != ego and reference not in referenced:
-                referenced.append(reference)
-
-            checks.append(
-                (lambda target=target, direction=direction, reference=reference:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_change_time_headway(F, E, reference, t0, t1, C, target, direction)))
-            )
-
-        # --- keep_time_headway ---
-        if name == "keep_time_headway":
-            reference = args.get("reference")
-            if reference is None:
-                raise ValueError("keep_time_headway requires 'reference'")
-            if reference and reference != ego and reference not in referenced:
-                referenced.append(reference)
-
-            checks.append(
-                (lambda reference=reference:
-                    (lambda F, E, N, t0, t1, C:
-                        _check_keep_time_headway(F, E, reference, t0, t1, C)))
-            )
-
-        if name == "keep_lane":
+        elif name == "keep_lane":
             # Keep the current lane over the whole window; target is lane(t0)
             checks.append(
                 (lambda: (lambda F, E, N, t0, t1, C: _check_keep_lane(F, E, N, t0, t1, C)))()
