@@ -1,4 +1,4 @@
-from osc_parser.constraints import constraints_from_ir
+from osc_parser.matching.constraints import constraints_from_ir
 from . import MiniOSC2ScenarioConfig, ConfigInit, print_pytree, pytree_to_actor_constraints
 from .pytree.ir_lowering import IRLowering
 from .pytree.print_tree import print_ir

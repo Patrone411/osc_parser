@@ -1,2 +1,404 @@
-{'top': {'actors': {'ego_vehicle': {'type': 'vehicle'}, 'second_car': {'type': 'vehicle'}, 'npc': {'type': 'person'}}, 'blocks': [{'type': 'serial', 'label': None, 'duration': None, 'calls': [], 'children': [{'type': 'parallel', 'label': 'get_ahead', 'duration': {'value': 15, 'unit': 'second'}, 'calls': [{'actor': 'ego_vehicle', 'action': 'drive', 'action_args': {}, 'modifiers': [{'name': 'lane', 'args': {'movement_mode': 'other', 'lane': 1}}, {'name': 'speed', 'args': {'movement_mode': 'other', 'speed': {'range': [40, 60], 'unit': 'kilometer_per_hour'}}}]}, {'actor': 'second_car', 'action': 'drive', 'action_args': {}, 'modifiers': [{'name': 'position', 'args': {'ahead_of': 'ego_vehicle', 'at': 'start', 'movement_mode': 'other', 'distance': {'value': 10, 'unit': 'meter'}}}, {'name': 'speed', 'args': {'at': 'start', 'movement_mode': 'other', 'speed': {'value': 10, 'unit': 'kilometer_per_hour'}}}, {'name': 'position', 'args': {'behind': 'ego_vehicle', 'at': 'end', 'movement_mode': 'other', 'distance': {'value': 10, 'unit': 'meter'}}}, {'name': 'speed', 'args': {'at': 'end', 'movement_mode': 'other', 'speed': {'value': 5, 'unit': 'kilometer_per_hour'}}}, {'name': 'lane', 'args': {'movement_mode': 'other', 'lane': 2}}]}], 'children': []}]}], 'calls_flat': [{'actor': 'ego_vehicle', 'action': 'drive', 'action_args': {}, 'modifiers': [{'name': 'lane', 'args': {'movement_mode': 'other', 'lane': 1}}, {'name': 'speed', 'args': {'movement_mode': 'other', 'speed': {'range': [40, 60], 'unit': 'kilometer_per_hour'}}}], 'block_label': 'get_ahead', 'block_type': 'parallel'}, {'actor': 'second_car', 'action': 'drive', 'action_args': {}, 'modifiers': [{'name': 'position', 'args': {'ahead_of': 'ego_vehicle', 'at': 'start', 'movement_mode': 'other', 'distance': {'value': 10, 'unit': 'meter'}}}, {'name': 'speed', 'args': {'at': 'start', 'movement_mode': 'other', 'speed': {'value': 10, 'unit': 'kilometer_per_hour'}}}, {'name': 'position', 'args': {'behind': 'ego_vehicle', 'at': 'end', 'movement_mode': 'other', 'distance': {'value': 10, 'unit': 'meter'}}}, {'name': 'speed', 'args': {'at': 'end', 'movement_mode': 'other', 'speed': {'value': 5, 'unit': 'kilometer_per_hour'}}}, {'name': 'lane', 'args': {'movement_mode': 'other', 'lane': 2}}], 'block_label': 'get_ahead', 'block_type': 'parallel'}]}}
-call:  {'actor': 'ego_vehicle', 'action': 'drive', 'action_args': {}, 'modifiers': [{'name': 'lane', 'args': {'movement_mode': 'other', 'lane': 1}}, {'name': 'speed', 'args': {'movement_mode': 'other', 'speed': {'range': [40, 60], 'unit': 'kilometer_per_hour'}}}], 'block_label': 'get_ahead', 'block_type': 'parallel'}
+{
+  "top": {
+    "actors": {
+      "ego_vehicle": {
+        "type": "vehicle"
+      },
+      "second_car": {
+        "type": "vehicle"
+      },
+      "npc": {
+        "type": "person"
+      }
+    },
+    "blocks": [
+      {
+        "type": "serial",
+        "label": null,
+        "duration": null,
+        "calls": [],
+        "children": [
+          {
+            "type": "parallel",
+            "label": "get_ahead",
+            "duration": {
+              "value": 15,
+              "unit": "second"
+            },
+            "calls": [
+              {
+                "actor": "ego_vehicle",
+                "action": "change_lane",
+                "action_args": {
+                  "num_of_lanes": 1,
+                  "side": "left",
+                  "reference": "second_car",
+                  "offset": null,
+                  "rate_profile": null,
+                  "rate_peak": null,
+                  "target": null,
+                  "duration": null
+                },
+                "modifiers": []
+              },
+              {
+                "actor": "ego_vehicle",
+                "action": "assign_speed",
+                "action_args": {
+                  "target": {
+                    "range": [
+                      40,
+                      60
+                    ],
+                    "unit": "kilometer_per_hour"
+                  },
+                  "duration": null
+                },
+                "modifiers": []
+              },
+              {
+                "actor": "ego_vehicle",
+                "action": "assign_orientation",
+                "action_args": {
+                  "target": [
+                    [
+                      [
+                        "orientation_3d",
+                        {
+                          "value": 30,
+                          "unit": "degree"
+                        }
+                      ],
+                      {
+                        "value": 40,
+                        "unit": "degree"
+                      }
+                    ],
+                    {
+                      "value": 50,
+                      "unit": "degree"
+                    }
+                  ],
+                  "duration": null
+                },
+                "modifiers": []
+              },
+              {
+                "actor": "ego_vehicle",
+                "action": "assign_position",
+                "action_args": {
+                  "odr_point": {
+                    "road": "test_r_id",
+                    "lane": "test_l_id",
+                    "s": 3.0,
+                    "t": 1.5
+                  },
+                  "position": null,
+                  "duration": null,
+                  "route_point": null,
+                  "odrPoint": null,
+                  "odr": null
+                },
+                "modifiers": []
+              },
+              {
+                "actor": "ego_vehicle",
+                "action": "change_space_gap",
+                "action_args": {
+                  "target": {
+                    "value": 1,
+                    "unit": "meter"
+                  },
+                  "direction": "ahead",
+                  "reference": "second_car",
+                  "duration": null
+                },
+                "modifiers": []
+              },
+              {
+                "actor": "ego_vehicle",
+                "action": "drive",
+                "action_args": {
+                  "duration": {
+                    "value": 12,
+                    "unit": "second"
+                  }
+                },
+                "modifiers": [
+                  {
+                    "name": "lane",
+                    "args": {
+                      "lane": 1
+                    }
+                  },
+                  {
+                    "name": "speed",
+                    "args": {
+                      "speed": {
+                        "range": [
+                          40,
+                          60
+                        ],
+                        "unit": "kilometer_per_hour"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "actor": "second_car",
+                "action": "drive",
+                "action_args": {
+                  "duration": null
+                },
+                "modifiers": [
+                  {
+                    "name": "position",
+                    "args": {
+                      "ahead_of": "ego_vehicle",
+                      "at": "start",
+                      "distance": {
+                        "value": 10,
+                        "unit": "meter"
+                      }
+                    }
+                  },
+                  {
+                    "name": "speed",
+                    "args": {
+                      "at": "start",
+                      "speed": {
+                        "value": 10,
+                        "unit": "kilometer_per_hour"
+                      }
+                    }
+                  },
+                  {
+                    "name": "position",
+                    "args": {
+                      "behind": "ego_vehicle",
+                      "at": "end",
+                      "distance": {
+                        "value": 10,
+                        "unit": "meter"
+                      }
+                    }
+                  },
+                  {
+                    "name": "speed",
+                    "args": {
+                      "at": "end",
+                      "speed": {
+                        "value": 5,
+                        "unit": "kilometer_per_hour"
+                      }
+                    }
+                  },
+                  {
+                    "name": "lane",
+                    "args": {
+                      "lane": 2
+                    }
+                  }
+                ]
+              }
+            ],
+            "children": []
+          }
+        ]
+      }
+    ],
+    "calls_flat": [
+      {
+        "actor": "ego_vehicle",
+        "action": "change_lane",
+        "action_args": {
+          "num_of_lanes": 1,
+          "side": "left",
+          "reference": "second_car",
+          "offset": null,
+          "rate_profile": null,
+          "rate_peak": null,
+          "target": null,
+          "duration": null
+        },
+        "modifiers": [],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "ego_vehicle",
+        "action": "assign_speed",
+        "action_args": {
+          "target": {
+            "range": [
+              40,
+              60
+            ],
+            "unit": "kilometer_per_hour"
+          },
+          "duration": null
+        },
+        "modifiers": [],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "ego_vehicle",
+        "action": "assign_orientation",
+        "action_args": {
+          "target": [
+            [
+              [
+                "orientation_3d",
+                {
+                  "value": 30,
+                  "unit": "degree"
+                }
+              ],
+              {
+                "value": 40,
+                "unit": "degree"
+              }
+            ],
+            {
+              "value": 50,
+              "unit": "degree"
+            }
+          ],
+          "duration": null
+        },
+        "modifiers": [],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "ego_vehicle",
+        "action": "assign_position",
+        "action_args": {
+          "odr_point": {
+            "road": "test_r_id",
+            "lane": "test_l_id",
+            "s": 3.0,
+            "t": 1.5
+          },
+          "position": null,
+          "duration": null,
+          "route_point": null,
+          "odrPoint": null,
+          "odr": null
+        },
+        "modifiers": [],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "ego_vehicle",
+        "action": "change_space_gap",
+        "action_args": {
+          "target": {
+            "value": 1,
+            "unit": "meter"
+          },
+          "direction": "ahead",
+          "reference": "second_car",
+          "duration": null
+        },
+        "modifiers": [],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "ego_vehicle",
+        "action": "drive",
+        "action_args": {
+          "duration": {
+            "value": 12,
+            "unit": "second"
+          }
+        },
+        "modifiers": [
+          {
+            "name": "lane",
+            "args": {
+              "lane": 1
+            }
+          },
+          {
+            "name": "speed",
+            "args": {
+              "speed": {
+                "range": [
+                  40,
+                  60
+                ],
+                "unit": "kilometer_per_hour"
+              }
+            }
+          }
+        ],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      },
+      {
+        "actor": "second_car",
+        "action": "drive",
+        "action_args": {
+          "duration": null
+        },
+        "modifiers": [
+          {
+            "name": "position",
+            "args": {
+              "ahead_of": "ego_vehicle",
+              "at": "start",
+              "distance": {
+                "value": 10,
+                "unit": "meter"
+              }
+            }
+          },
+          {
+            "name": "speed",
+            "args": {
+              "at": "start",
+              "speed": {
+                "value": 10,
+                "unit": "kilometer_per_hour"
+              }
+            }
+          },
+          {
+            "name": "position",
+            "args": {
+              "behind": "ego_vehicle",
+              "at": "end",
+              "distance": {
+                "value": 10,
+                "unit": "meter"
+              }
+            }
+          },
+          {
+            "name": "speed",
+            "args": {
+              "at": "end",
+              "speed": {
+                "value": 5,
+                "unit": "kilometer_per_hour"
+              }
+            }
+          },
+          {
+            "name": "lane",
+            "args": {
+              "lane": 2
+            }
+          }
+        ],
+        "block_label": "get_ahead",
+        "block_type": "parallel"
+      }
+    ]
+  }
+}

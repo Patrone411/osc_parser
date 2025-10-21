@@ -104,7 +104,37 @@ _DEFAULT_CFG = {
     "time_headway_tol": 0.30,     # seconds; numeric tolerance for matching the target or sampled headway
     "headway_min_coverage": 0.85, # coverage threshold for keep_time_headway when during_mode == "coverage"
     "min_speed_for_headway": 0.30,# m/s; below this we consider headway undefined
+
+    # --- lane ordering ---
+    "lane_id_convention": "opendrive_rht",
 }
+
+def _lane_delta_sign(side: Optional[str], cfg: Dict[str, Any], base_lane: int) -> int:
+    """
+    Returns +1/-1 for lane delta per configured convention.
+
+    cfg["lane_id_convention"]:
+      - "opendrive_rht" (or "odr", "opendrive"): right-hand traffic, lanes right of ref are negative.
+        For typical forward travel (base_lane <= 0):
+          left  -> +1 (toward zero)
+          right -> -1 (more negative)
+      - otherwise: legacy/generic (left=-1, right=+1).
+    """
+    s = (side or "").lower()
+    conv = str(cfg.get("lane_id_convention", "generic")).lower()
+
+    if conv in ("opendrive_rht", "opendrive", "odr"):
+        # Assume forward-direction lanes have ids <= 0 (ODR RHT).
+        # If you later need to handle positive base lanes (opposite direction),
+        # you can branch on sign(base_lane).
+        if s == "left":
+            return +1
+        if s == "right":
+            return -1
+        return 0
+
+    # legacy/generic: your original behavior
+    return _lane_sign_from_side(s)  # left=-1, right=+1
 
 def _check_change_lane_action(
     feats,
@@ -127,7 +157,6 @@ def _check_change_lane_action(
       • Presence and finiteness checks included.
       • We do NOT enforce lateral offset / shape here (needs lane geometry); can be added later.
     """
-    import numpy as np
 
     le = _get(feats.lane_idx, ego)
     if le.size == 0 or t0 >= le.size or t1 >= le.size:
@@ -145,19 +174,21 @@ def _check_change_lane_action(
     # Path 2: compute from (num_of_lanes, side, reference)
     ref_name = reference or ego
     lr = _get(feats.lane_idx, ref_name)
-    if lr.size == 0 or t1 >= lr.size or not np.isfinite(lr[t1]):
+
+    # Use start lane when reference is the ego (base = "where I began")
+    ref_t = t0 if (ref_name == ego) else t1
+    if lr.size == 0 or ref_t >= lr.size or not np.isfinite(lr[ref_t]):
         return False
-    ref_lane_end = int(np.rint(lr[t1]))
+    ref_lane_base = int(np.rint(lr[ref_t]))
 
     side_l = (side or "").lower()
     if side_l in ("same", "same_as"):
-        tgt = ref_lane_end
+        tgt = ref_lane_base
     elif side_l in ("left", "right"):
         n = int(num_of_lanes) if num_of_lanes is not None else 1
-        sgn = _lane_sign_from_side(side_l)  # left=-1, right=+1 (consistent with modifier check)
-        tgt = ref_lane_end + sgn * abs(n)
+        sgn = _lane_delta_sign(side_l, cfg, base_lane=ref_lane_base)
+        tgt = ref_lane_base + sgn * abs(n)
     else:
-        # Not enough info to determine a target
         return False
 
     return (end_lane == tgt) and (end_lane != start_lane)
@@ -512,25 +543,41 @@ def _check_distance_traveled(
     # 2) prefer Frenet s difference
     s = getattr(feats, "s", {}).get(ego)
     pres = _get(feats.present, ego)
-    if s is not None and t0 < len(s) and t1 < len(s):
-        if pres.size and (t0 < pres.size and t1 < pres.size):
-            if not (pres[t0] > 0.5 and pres[t1] > 0.5):
+    if s is not None and t0 < len(s):
+        # choose end index: t1+1 if available (to cover all 'duration' steps), else t1
+        te = t1 + 1 if (t1 + 1) < len(s) else t1
+        if te < 0:
+            return False
+        if pres.size and (t0 < pres.size and te < pres.size):
+            if not (pres[t0] > 0.5 and pres[te] > 0.5):
                 # fall back to XY or fail
                 pass
-        s0, s1 = float(s[t0]), float(s[t1])
-        if np.isfinite(s0) and np.isfinite(s1):
-            d = abs(s1 - s0)
-            return (d >= lo) and (d <= hi)
+            else:
+                s0, se = float(s[t0]), float(s[te])
+                if np.isfinite(s0) and np.isfinite(se):
+                    d = abs(se - s0)
+                    return (d >= lo) and (d <= hi)
+        else:
+            s0, se = float(s[t0]), float(s[te])
+            if np.isfinite(s0) and np.isfinite(se):
+                d = abs(se - s0)
+                return (d >= lo) and (d <= hi)
 
-    # 3) fallback: accumulate XY segment lengths where present & finite
+    # 3) fallback: accumulate XY segment lengths (extend to t1+1 if available)
     x = _get(feats.x, ego); y = _get(feats.y, ego)
-    if x.size and y.size and (t1 < x.size) and (t1 < y.size):
-        sl = slice(t0, t1 + 1)
-        xi = np.asarray(x[sl], dtype=float)
-        yi = np.asarray(y[sl], dtype=float)
-        pres = _get(feats.present, ego)[sl] > 0.5
+    if x.size and y.size:
+        # include t1+1 if it's in-bounds so we count all steps in the duration
+        stop = min(max(x.size, y.size), (t1 + 1) + 1)  # slice end is exclusive
+        if stop <= t0 + 1:
+            return False
+        sl = slice(t0, stop)
+        xi = np.asarray(x[sl], dtype=float) if x.size >= stop else np.array([], dtype=float)
+        yi = np.asarray(y[sl], dtype=float) if y.size >= stop else np.array([], dtype=float)
+        if xi.size == 0 or yi.size == 0:
+            return False
+        pres_win = _get(feats.present, ego)[sl] > 0.5
         finite = np.isfinite(xi) & np.isfinite(yi)
-        idx = np.where(pres & finite)[0]
+        idx = np.where(pres_win & finite)[0]
         if idx.size >= 2:
             dsum = 0.0
             for k in range(idx.size - 1):
@@ -950,7 +997,6 @@ def _check_remain_stationary(
          • and, where available, |s_dot| <= stationary_axis_tol and |t_dot| <= stationary_axis_tol
       - Uses strict “during” semantics with up to 'stationary_max_false' allowed violations.
     """
-    import numpy as np
 
     sl = slice(t0, t1 + 1)
     tol_v  = float(cfg.get("stationary_speed_tol", 0.15))
@@ -1442,11 +1488,11 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
 
         # (Offset / rate_profile / rate_peak intentionally ignored in this recognizer; see docstring)
         checks.append(
-            (lambda target_lane=target_lane, a_num=a_num, a_side=a_side, a_ref=a_ref:
-                (lambda F, E, N, t0, t1, C:
-                    _check_change_lane_action(F, E, N, t0, t1, C, target_lane, a_num, a_side, a_ref)))
+        (lambda target_lane=target_lane, a_num=a_num, a_side=a_side, a_ref=a_ref:
+            (lambda F, E, N, t0, t1, C:
+                _check_change_lane_action(F, E, N, t0, t1, C, target_lane, a_num, a_side, a_ref)))()
         )
-    
+
     elif action_name == "assign_position":
         pos_arg  = aargs.get("position")
         rp_arg   = aargs.get("route_point")
@@ -1467,7 +1513,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             yt = float(target["y"]) * scale
             checks.append(
                 (lambda xt=xt, yt=yt:
-                    (lambda F, E, N, t0, t1, C: _check_assign_position_xy(F, E, N, t0, t1, C, xt, yt)))
+                    (lambda F, E, N, t0, t1, C: _check_assign_position_xy(F, E, N, t0, t1, C, xt, yt)))()
             )
 
         # ST -> Frenet coordinates
@@ -1504,7 +1550,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda target=target, direction=direction, reference=reference:
                 (lambda F, E, N, t0, t1, C:
-                    _check_change_space_gap(F, E, reference, t0, t1, C, target, direction)))
+                    _check_change_space_gap(F, E, reference, t0, t1, C, target, direction)))()
         )
 
     elif action_name == "keep_space_gap":
@@ -1516,7 +1562,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda direction=direction, reference=reference:
                 (lambda F, E, N, t0, t1, C:
-                    _check_keep_space_gap(F, E, reference, t0, t1, C, direction)))
+                    _check_keep_space_gap(F, E, reference, t0, t1, C, direction)))()
         )
 
     elif action_name == "change_time_headway":
@@ -1529,7 +1575,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda target=target, direction=direction, reference=reference:
                 (lambda F, E, N, t0, t1, C:
-                    _check_change_time_headway(F, E, reference, t0, t1, C, target, direction)))
+                    _check_change_time_headway(F, E, reference, t0, t1, C, target, direction)))()
         )
 
     elif action_name == "keep_time_headway":
@@ -1540,7 +1586,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda reference=reference:
                 (lambda F, E, N, t0, t1, C:
-                    _check_keep_time_headway(F, E, reference, t0, t1, C)))
+                    _check_keep_time_headway(F, E, reference, t0, t1, C)))()
         )
 
     elif action_name == "follow_lane":
@@ -1552,7 +1598,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda target_lane=target_lane:
                 (lambda F, E, N, t0, t1, C:
-                    _check_follow_lane(F, E, N, t0, t1, C, target_lane)))
+                    _check_follow_lane(F, E, N, t0, t1, C, target_lane)))()
         )
 
     elif action_name == "remain_stationary":
@@ -1570,7 +1616,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda target=target, rp=rp, peak=peak:
                 (lambda F, E, N, t0, t1, C:
-                    _check_change_acceleration(F, E, N, t0, t1, C, target, rp, peak)))
+                    _check_change_acceleration(F, E, N, t0, t1, C, target, rp, peak)))()
         )
 
     elif action_name == "keep_acceleration":
@@ -1585,7 +1631,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda speed_arg=speed_arg:
                 (lambda F, E, N, t0, t1, C:
-                    _check_assign_speed(F, E, N, t0, t1, C, speed_arg)))
+                    _check_assign_speed(F, E, N, t0, t1, C, speed_arg)))()
         )
 
     elif action_name == "assign_acceleration":
@@ -1595,7 +1641,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda accel_arg=accel_arg:
                 (lambda F, E, N, t0, t1, C:
-                    _check_assign_acceleration(F, E, N, t0, t1, C, accel_arg)))
+                    _check_assign_acceleration(F, E, N, t0, t1, C, accel_arg)))()
         )
 
     elif action_name == "assign_orientation":
@@ -1613,7 +1659,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         checks.append(
             (lambda yaw_arg=yaw_arg:
                 (lambda F, E, N, t0, t1, C:
-                    _check_assign_orientation_yaw(F, E, N, t0, t1, C, yaw_arg)))
+                    _check_assign_orientation_yaw(F, E, N, t0, t1, C, yaw_arg)))()
         )
     
     # --- translate modifiers ---
@@ -1626,7 +1672,8 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                 other = args.get("same_as"); _ref(other)
                 at = args.get("at")
                 checks.append(lambda other=other, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_speed_same_as(F, E, other, t0, t1, C, at)))
+                              (lambda F, E, N, t0, t1, C: _check_speed_same_as(F, E, other, t0, t1, C, at))()
+                )
             else:
                 at = args.get("at")
                 sp = args.get("speed") or {}
@@ -1639,12 +1686,15 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                 other = args.get("ahead_of"); _ref(other)
                 dist = args.get("distance")
                 checks.append(lambda other=other, dist=dist, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_position(F, E, other, t0, t1, C, "ahead_of", dist, at)))
+                              (lambda F, E, N, t0, t1, C: _check_position(F, E, other, t0, t1, C, "ahead_of", dist, at))()
+                )
+                
             elif "behind" in args:
                 other = args.get("behind"); _ref(other)
                 dist = args.get("distance")
                 checks.append(lambda other=other, dist=dist, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_position(F, E, other, t0, t1, C, "behind", dist, at)))
+                              (lambda F, E, N, t0, t1, C: _check_position(F, E, other, t0, t1, C, "behind", dist, at))()
+                )
 
         elif name == "lateral":
             other = args.get("side_of"); _ref(other)
@@ -1652,7 +1702,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             at = args.get("at", "start")
             dist = args.get("distance")
             checks.append(lambda other=other, side=side, dist=dist, at=at:
-                          (lambda F, E, N, t0, t1, C: _check_lateral(F, E, other, t0, t1, C, side, dist, at)))
+                          (lambda F, E, N, t0, t1, C: _check_lateral(F, E, other, t0, t1, C, side, dist, at))())
 
         elif name == "lane":
             at = args.get("at", "start")
@@ -1662,18 +1712,18 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             if "same_as" in args:
                 other = args.get("same_as"); _ref(other)
                 checks.append(lambda other=other, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_same_as(F, E, other, t0, t1, C, at)))
+                              (lambda F, E, N, t0, t1, C: _check_lane_same_as(F, E, other, t0, t1, C, at))())
                 
             elif "side_of" in args and "side" in args:
                 other = args.get("side_of"); _ref(other)
                 side = args.get("side")
                 lane = args.get("lane")  # optional
                 checks.append(lambda other=other, side=side, lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_side_of(F, E, other, t0, t1, C, lane, side, at)))
+                              (lambda F, E, N, t0, t1, C: _check_lane_side_of(F, E, other, t0, t1, C, lane, side, at))())
             elif "lane" in args:
                 lane = int(args.get("lane"))
                 checks.append(lambda lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_number(F, E, N, t0, t1, C, lane, at)))
+                              (lambda F, E, N, t0, t1, C: _check_lane_number(F, E, N, t0, t1, C, lane, at))())
 
         elif name == "change_lane":
             # Accept lane delta as:
@@ -1696,39 +1746,38 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                 checks.append(
                     (lambda d=delta_lane, side=side:
                         (lambda F, E, N, t0, t1, C:
-                            _check_change_lane(F, E, N, t0, t1, C, d, side)))
+                            _check_change_lane(F, E, N, t0, t1, C, d, side))())
                 )
 
         elif name == "change_speed":
             dv = args.get("speed") or {}
             checks.append(lambda dv=dv:
-                          (lambda F, E, N, t0, t1, C: _check_change_speed(F, E, N, t0, t1, C, dv)))
+                          (lambda F, E, N, t0, t1, C: _check_change_speed(F, E, N, t0, t1, C, dv))())
 
         elif name == "acceleration":
             at = args.get("at")
             acc = args.get("accel") or {}
             checks.append(lambda acc=acc, at=at:
-                          (lambda F, E, N, t0, t1, C: _check_acceleration(F, E, N, t0, t1, C, acc, at)))
+                          (lambda F, E, N, t0, t1, C: _check_acceleration(F, E, N, t0, t1, C, acc, at))())
 
         elif name == "yaw":
             at = args.get("at", "start")
             ang = args.get("angle") or {}
             checks.append(lambda ang=ang, at=at:
-                          (lambda F, E, N, t0, t1, C: _check_yaw(F, E, N, t0, t1, C, ang, at)))
+                          (lambda F, E, N, t0, t1, C: _check_yaw(F, E, N, t0, t1, C, ang, at))())
 
         elif name == "yaw_delta":
             at = args.get("at", "start")
             ang = args.get("angle") or {}
             checks.append(lambda ang=ang, at=at:
-                          (lambda F, E, N, t0, t1, C: _check_yaw_delta(F, E, N, t0, t1, C, ang, at)))
+                          (lambda F, E, N, t0, t1, C: _check_yaw_delta(F, E, N, t0, t1, C, ang, at))())
 
         elif name == "distance":
-            # Spec: distance traveled over the window, NOT spacing to another actor
             dist = args.get("distance") or {}
             checks.append(
                 (lambda dist=dist:
                     (lambda F, E, N, t0, t1, C:
-                        _check_distance_traveled(F, E, N, t0, t1, C, dist)))
+                        _check_distance_traveled(F, E, N, t0, t1, C, dist)))()
             )
     
         # --- keep_speed ---
