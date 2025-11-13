@@ -564,23 +564,16 @@
       "applies_to": "movable_object.action_for_movable_object",
       "variants": [
         {
-          "name": "index",  
+          "name": "index",
           "params": {
             "lane": { "type": "int", "optional": false },
             "at": { "type": "at", "optional": true },
             "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
           }
         },
-        
         {
           "name": "same_as",
           "params": {
-            "lane": {
-              "type": "uint",
-              "optional": true,
-              "default": 1,
-              "ignored_if_present": ["same_as"]
-            },
             "same_as": { "type": "physical_object", "optional": false },
             "at": { "type": "at", "optional": true },
             "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
@@ -588,20 +581,26 @@
         },
         {
           "name": "side_of",
-            "params": {
-              "lane": { "type": "uint", "optional": true },
-              "side_of": { "type": "physical_object", "optional": false },
-              "side": { "type": "side_left_right", "optional": false },
-              "at": { "type": "at", "optional": true },
-              "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
-            }
+          "params": {
+            "side_of": { "type": "physical_object", "optional": false },
+            "side":    { "type": "side_left_right", "optional": false },
+            "at":      { "type": "at", "optional": true },
+            "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
+          }
         },
         {
-          "name": "from",
+          "name": "right_of",
           "params": {
-            "lane": { "type": "uint", "optional": false, "default": 1 },
-            "from": { "type": "side_left_right", "optional": false },
-            "at": { "type": "at", "optional": true },
+            "right_of": { "type": "physical_object", "optional": false },
+            "at":       { "type": "at", "optional": true },
+            "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
+          }
+        },
+        {
+          "name": "left_of",
+          "params": {
+            "left_of": { "type": "physical_object", "optional": false },
+            "at":      { "type": "at", "optional": true },
             "movement_mode": { "type": "movement_mode", "optional": true, "default": "other" }
           }
         }

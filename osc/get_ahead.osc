@@ -1,0 +1,25 @@
+import standard.osc
+
+scenario top:
+    path: path                      # A path in the map
+    path.min_lanes(2)               #min amount of lanes in the scene
+    ego_vehicle: vehicle            # ego car
+    npc: vehicle                    # The other car
+
+    event start
+    event end
+    event left
+    
+    do serial:
+        get_ahead: parallel(duration: 9s):
+            ego_vehicle.drive(path) with:
+                speed([1kph..120kph])
+                lane(1, at: start) # left to right: [1..n]
+            npc.drive(path) with:
+                lane(right_of: ego_vehicle, at: start)
+                position([1m..100m], behind: ego_vehicle, at: start)
+                position([1m..100m], ahead_of: ego_vehicle, at: end)
+    
+
+
+

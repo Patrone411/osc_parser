@@ -53,7 +53,8 @@ class IRLowering(ASTVisitor):
     # ---- public API ----
     def lower(self, ast_root) -> List[ScenarioNode]:
         self.visit(ast_root)
-        return self.scenarios
+        return {scn.name: scn for scn in self.scenarios}
+
 
     # ---- helpers ----
     def _get_unit_dict(self):

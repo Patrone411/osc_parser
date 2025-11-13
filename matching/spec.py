@@ -18,7 +18,39 @@ class BlockQuery:
     duration_frames: int               # window length in frames (inclusive end)
     checks: List[Callable[..., bool]]  # fn(feats, ego, npc, t0, t1, cfg) -> bool
     cfg: Dict[str, Any] = field(default_factory=dict)
+    # optional metadata (set by build_block_query)
+    arity: int = 1
+    roles_used: List[str] = field(default_factory=list)
 
+# ---- local role scanner to avoid circular import with role_planning ----
+_REF_KEYS_LOCAL = ("reference", "same_as", "ahead_of", "behind", "side_of")
+
+def _label(label, fn):
+    def wrapped(F, E, N, t0, t1, C):
+        ok = fn(F, E, N, t0, t1, C)
+        if C.get("debug_checks"):
+            print(f"[check] {label} t=[{t0},{t1}) -> {ok}")
+        return ok
+    wrapped._label = label
+    return wrapped
+
+def _roles_used_by_call_local(call: Dict[str, Any]) -> List[str]:
+    roles = set()
+    actor = call.get("actor")
+    if isinstance(actor, str):
+        roles.add(actor)
+    aargs = call.get("action_args") or {}
+    for k in _REF_KEYS_LOCAL:
+        v = aargs.get(k)
+        if isinstance(v, str):
+            roles.add(v)
+    for m in call.get("modifiers") or []:
+        args = m.get("args") or {}
+        for k in _REF_KEYS_LOCAL:
+            v = args.get(k)
+            if isinstance(v, str):
+                roles.add(v)
+    return sorted(roles)
 
 # ======================================================================================
 # Units, normalization, small helpers
@@ -101,40 +133,34 @@ _DEFAULT_CFG = {
     "lane_min_coverage": 0.95,
 
     # --- time headway knobs ---
-    "time_headway_tol": 0.30,     # seconds; numeric tolerance for matching the target or sampled headway
-    "headway_min_coverage": 0.85, # coverage threshold for keep_time_headway when during_mode == "coverage"
-    "min_speed_for_headway": 0.30,# m/s; below this we consider headway undefined
+    "time_headway_tol": 0.30,     # seconds
+    "headway_min_coverage": 0.85,
+    "min_speed_for_headway": 0.30,  # m/s
 
     # --- lane ordering ---
     "lane_id_convention": "opendrive_rht",
 }
 
+_DEFAULT_CFG.update({
+    "speed_series_unit": "m/s",  # set to "km/h" or "mph" if your series is stored that way
+})
+
+def _series_speed_to_mps(arr: np.ndarray, cfg: Dict[str, Any]) -> np.ndarray:
+    """
+    Convert a speed time series in the unit declared by cfg['speed_series_unit']
+    into meters/second, using the same unit table used for Physical targets.
+    """
+    unit = str(cfg.get("speed_series_unit", "m/s")).lower()
+    factor = _SPEED_UNITS.get(unit, 1.0)  # km/h -> 1/3.6, mph -> 0.44704, etc.
+    a = np.asarray(arr, dtype=float)
+    return a * float(factor)
+
 def _lane_delta_sign(side: Optional[str], cfg: Dict[str, Any], base_lane: int) -> int:
-    """
-    Returns +1/-1 for lane delta per configured convention.
-
-    cfg["lane_id_convention"]:
-      - "opendrive_rht" (or "odr", "opendrive"): right-hand traffic, lanes right of ref are negative.
-        For typical forward travel (base_lane <= 0):
-          left  -> +1 (toward zero)
-          right -> -1 (more negative)
-      - otherwise: legacy/generic (left=-1, right=+1).
-    """
+    # Align with features & modifiers: larger lane index = right
     s = (side or "").lower()
-    conv = str(cfg.get("lane_id_convention", "generic")).lower()
-
-    if conv in ("opendrive_rht", "opendrive", "odr"):
-        # Assume forward-direction lanes have ids <= 0 (ODR RHT).
-        # If you later need to handle positive base lanes (opposite direction),
-        # you can branch on sign(base_lane).
-        if s == "left":
-            return +1
-        if s == "right":
-            return -1
-        return 0
-
-    # legacy/generic: your original behavior
-    return _lane_sign_from_side(s)  # left=-1, right=+1
+    if s == "left":  return -1
+    if s == "right": return +1
+    return 0
 
 def _check_change_lane_action(
     feats,
@@ -149,20 +175,14 @@ def _check_change_lane_action(
     reference: Optional[str],
 ) -> bool:
     """
-    OSC 8.8.3.3 change_lane (recognizer, simplified):
-      • If target lane is given → require lane_idx(ego,t1) == target and lane_idx(ego,t1) != lane_idx(ego,t0).
-      • Else compute target from (num_of_lanes, side, reference):
-            target = lane_idx(reference,t1)  (side == 'same'/'same_as')
-            target = lane_idx(reference,t1) ± num_of_lanes  (left/right; default num_of_lanes = 1)
-      • Presence and finiteness checks included.
-      • We do NOT enforce lateral offset / shape here (needs lane geometry); can be added later.
+    OSC 8.8.3.3 change_lane (recognizer, simplified)
     """
-
     le = _get(feats.lane_idx, ego)
     if le.size == 0 or t0 >= le.size or t1 >= le.size:
         return False
     if not (np.isfinite(le[t0]) and np.isfinite(le[t1])):
         return False
+    
     start_lane = int(np.rint(le[t0]))
     end_lane   = int(np.rint(le[t1]))
 
@@ -175,7 +195,6 @@ def _check_change_lane_action(
     ref_name = reference or ego
     lr = _get(feats.lane_idx, ref_name)
 
-    # Use start lane when reference is the ego (base = "where I began")
     ref_t = t0 if (ref_name == ego) else t1
     if lr.size == 0 or ref_t >= lr.size or not np.isfinite(lr[ref_t]):
         return False
@@ -277,14 +296,6 @@ def _to_seconds_unit(u: Optional[str]) -> float:
     return _TIME_UNITS.get(str(u).lower(), 1.0)
 
 def _time_val_or_range_to_bounds(spec: Dict[str, Any], tol: float) -> Tuple[float, float]:
-    """
-    Normalize a 'time' Physical/Range dict into numeric bounds in **seconds**.
-    Adds ±tol when a scalar value is provided (like _val_or_range_to_bounds).
-    Accepts:
-      {"value": 4.1, "unit": "s"}  → (4.1 - tol, 4.1 + tol)
-      {"range": [4.0, 5.0], "unit": "s"} → (4.0, 5.0)
-    Unit is optional; defaults to seconds.
-    """
     if "value" in spec:
         k = _to_seconds_unit(spec.get("unit"))
         v = float(spec["value"]) * k
@@ -293,14 +304,9 @@ def _time_val_or_range_to_bounds(spec: Dict[str, Any], tol: float) -> Tuple[floa
         k = _to_seconds_unit(spec.get("unit"))
         lo, hi = spec["range"]
         return (float(lo) * k, float(hi) * k)
-    # Fallback: treat as 0±tol
     return (-tol, +tol)
 
 def _signed_longitudinal_gap(feats, ego: str, npc: str, t: int) -> Optional[float]:
-    """
-    Prefer Frenet 's' to compute signed longitudinal gap:
-      ds = s_ego - s_npc (meters). Returns None if any is invalid at t.
-    """
     s_e = getattr(feats, "s", {}).get(ego)
     s_n = getattr(feats, "s", {}).get(npc)
     if s_e is None or s_n is None:
@@ -313,10 +319,6 @@ def _signed_longitudinal_gap(feats, ego: str, npc: str, t: int) -> Optional[floa
     return se - sn
 
 def _ego_longitudinal_speed(feats, ego: str, t: int) -> Optional[float]:
-    """
-    Prefer Frenet s_dot (longitudinal speed). Fallback to scalar speed if needed.
-    Returns signed s_dot if available, else +|speed| (non-negative).
-    """
     sdot = getattr(feats, "s_dot", {}).get(ego)
     if sdot is not None and t < len(sdot):
         val = float(sdot[t])
@@ -327,14 +329,9 @@ def _ego_longitudinal_speed(feats, ego: str, t: int) -> Optional[float]:
     val = float(v[t])
     if not np.isfinite(val):
         return None
-    return abs(val)  # no sign info in scalar speed
+    return abs(val)
 
 def _headway_time_mag(feats, ego: str, npc: str, t: int, min_speed: float) -> Optional[float]:
-    """
-    Compute |time headway| ≈ |Δs| / max(|v_long|, eps).
-    Uses Frenet s & s_dot; falls back to scalar speed if s_dot missing.
-    Returns None if Δs or speed invalid / too small.
-    """
     ds = _signed_longitudinal_gap(feats, ego, npc, t)
     if ds is None:
         return None
@@ -356,7 +353,6 @@ def _check_presence(feats, ego, npc, t0, t1, cfg) -> bool:
     cov_e = _presence_coverage(pres_e)
     need = float(cfg.get("presence_min_coverage", _DEFAULT_CFG["presence_min_coverage"]))
     if cov_e < need:
-        # allow integer missing if configured
         allow = cfg.get("presence_allow_missing", None)
         if isinstance(allow, int):
             if len(pres_e) - int(np.sum(pres_e > 0.5)) > allow:
@@ -384,9 +380,7 @@ def _check_speed(feats, ego, npc, t0, t1, cfg, arg_speed: Dict[str, Any], at: Op
         ti = _anchor_index(t0, t1, at)
         if ti >= v.size or not np.isfinite(v[ti]): return False
         return (v[ti] >= lo) and (v[ti] <= hi)
-    # during window
     sl = slice(t0, t1 + 1)
-    
     mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     if mode == "coverage":
         cov = _coverage_ratio(v[sl], lo, hi)
@@ -421,7 +415,6 @@ def _check_lateral(feats, ego, npc, t0, t1, cfg, side: str, dist_arg: Optional[D
     if str(lat[ti]).lower() != str(side).lower():
         return False
     if dist_arg:
-        # try Frenet t gap if available
         t_e = _get(feats.t, ego)
         t_n = _get(feats.t, npc)
         if t_e.size == 0 or t_n.size == 0 or ti >= t_e.size or ti >= t_n.size:
@@ -454,14 +447,13 @@ def _check_lane_side_of(feats, ego, npc, t0, t1, cfg, lane: Optional[int], side:
         return False
     if lane is None:
         return True
-    return _check_lane_number(feats, ego, npc, t0, t1, cfg, lane=lane, at=at)
+    return _check_lane_number(feats, ego, npc, t0, t1, cfg, lane, at=at)
 
 def _check_change_lane(feats, ego, npc, t0, t1, cfg, delta_lane: Dict[str, Any], side: Optional[str]) -> bool:
     le = _get(feats.lane_idx, ego)
     if le.size == 0 or t0 >= le.size or t1 >= le.size: return False
     if not (np.isfinite(le[t0]) and np.isfinite(le[t1])): return False
     delta = float(le[t1] - le[t0])
-    # force near-integer net change
     if abs(delta - round(delta)) > 0.25:
         return False
     if "value" in (delta_lane or {}):
@@ -530,27 +522,17 @@ def _check_distance_traveled(
     cfg: Dict[str, Any],
     dist_arg: Dict[str, Any],
 ) -> bool:
-    """
-    Movement modifier distance:
-      - Enforce that the distance traveled by 'ego' in [t0..t1] matches target.
-      - Prefer Frenet s: d = |s[t1] - s[t0]|.
-      - Optional fallback to XY arc length (accumulate segment lengths).
-    """
-    # 1) interpret target bounds (meters)
     spec = _norm_physical(dist_arg or {}, "distance")
     lo, hi = _val_or_range_to_bounds(spec, tol=float(cfg.get("distance_tol", 2.0)))
 
-    # 2) prefer Frenet s difference
     s = getattr(feats, "s", {}).get(ego)
     pres = _get(feats.present, ego)
     if s is not None and t0 < len(s):
-        # choose end index: t1+1 if available (to cover all 'duration' steps), else t1
         te = t1 + 1 if (t1 + 1) < len(s) else t1
         if te < 0:
             return False
         if pres.size and (t0 < pres.size and te < pres.size):
             if not (pres[t0] > 0.5 and pres[te] > 0.5):
-                # fall back to XY or fail
                 pass
             else:
                 s0, se = float(s[t0]), float(s[te])
@@ -563,11 +545,9 @@ def _check_distance_traveled(
                 d = abs(se - s0)
                 return (d >= lo) and (d <= hi)
 
-    # 3) fallback: accumulate XY segment lengths (extend to t1+1 if available)
     x = _get(feats.x, ego); y = _get(feats.y, ego)
     if x.size and y.size:
-        # include t1+1 if it's in-bounds so we count all steps in the duration
-        stop = min(max(x.size, y.size), (t1 + 1) + 1)  # slice end is exclusive
+        stop = min(max(x.size, y.size), (t1 + 1) + 1)
         if stop <= t0 + 1:
             return False
         sl = slice(t0, stop)
@@ -588,27 +568,6 @@ def _check_distance_traveled(
             return (dsum >= lo) and (dsum <= hi)
 
     return False
-
-"""def _check_distance(feats, ego, npc, t0, t1, cfg, dist_arg: Dict[str, Any], at: Optional[str]) -> bool:
-    if npc is None: return False
-    d = feats.rel_distance.get((ego, npc))
-    if d is None: return False
-    spec = _norm_physical(dist_arg, "distance")
-    lo, hi = _val_or_range_to_bounds(spec, tol=float(cfg.get("distance_tol", _DEFAULT_CFG["distance_tol"])))
-    if at:
-        ti = _anchor_index(t0, t1, at)
-        if ti >= len(d) or not np.isfinite(d[ti]): return False
-        return (d[ti] >= lo) and (d[ti] <= hi)
-    sl = slice(t0, t1 + 1)
-    mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
-    if mode == "coverage":
-        cov = _coverage_ratio(np.asarray(d[sl], dtype=float), lo, hi)
-        need = float(cfg.get("speed_min_coverage", _DEFAULT_CFG["speed_min_coverage"]))
-        return cov >= need
-    else:
-        max_false = int(cfg.get("during_max_false", _DEFAULT_CFG["during_max_false"]))
-        pres = _get(feats.present, ego)[sl]  # or AND ego&npc if you prefer
-        return _all_during_in_range(np.asarray(d[sl], dtype=float), lo, hi, pres=pres, max_false=max_false)"""
 
 def _check_speed_same_as(feats, ego, npc, t0, t1, cfg, at: Optional[str]) -> bool:
     if npc is None: return False
@@ -636,20 +595,10 @@ def _check_change_space_gap(
     target_arg: Dict[str, Any],
     direction: str,
 ) -> bool:
-    """
-    OSC 8.8.3.4 change_space_gap:
-      - direction in {ahead, behind} → use Δs (longitudinal)
-      - direction in {left, right}   → use Δt (lateral)
-      - inside/outside requires map.driving_rule → not implemented here
-    Target is measured along the chosen axis, not Euclidean.
-
-    Ends when the target gap is achieved at window end (t1).
-    """
     if npc is None:
         return False
 
     dir_l = str(direction or "").lower()
-    # Normalize target as a distance in meters
     spec = _norm_physical(target_arg or {}, "distance")
     if "value" in spec:
         tgt = float(spec["value"])
@@ -660,22 +609,18 @@ def _check_change_space_gap(
         return False
 
     tol = float(cfg.get("space_gap_tol", cfg.get("distance_tol", 2.0)))
+    ti = t1
 
-    ti = t1  # action semantics: "at end"
-    # Safeguard presence/size
     def _fin(v): return (v is not None) and np.isfinite(v)
 
     if dir_l in ("ahead", "behind"):
-        # Prefer categorical front/back from rel_position
         pos = feats.rel_position.get((ego, npc))
         if pos is None or ti >= len(pos):
             return False
-
         need = "front" if dir_l == "ahead" else "back"
         if str(pos[ti]) != need:
             return False
 
-        # Use Frenet s if available
         s_e = feats.s.get(ego); s_n = feats.s.get(npc)
         if s_e is None or s_n is None or ti >= len(s_e) or ti >= len(s_n):
             return False
@@ -683,13 +628,11 @@ def _check_change_space_gap(
         if not (_fin(se) and _fin(sn)):
             return False
 
-        # Δs with sign: ego ahead ⇒ se - sn > 0
         ds = se - sn
-        val = ds if dir_l == "ahead" else -ds  # always compare positive target
+        val = ds if dir_l == "ahead" else -ds
         return (val >= (lo - tol)) and (val <= (hi + tol))
 
     if dir_l in ("left", "right"):
-        # Prefer categorical left/right from lat_rel for sign
         lat = feats.lat_rel.get((ego, npc))
         if lat is None or ti >= len(lat):
             return False
@@ -697,20 +640,17 @@ def _check_change_space_gap(
         if str(lat[ti]).lower() != need:
             return False
 
-        # Use Frenet t if available
         t_e = feats.t.get(ego); t_n = feats.t.get(npc)
         if t_e is None or t_n is None or ti >= len(t_e) or ti >= len(t_n):
-            # optional: allow missing if configured
             return bool(cfg.get("lateral_allow_missing", True))
         te = float(t_e[ti]); tn = float(t_n[ti])
         if not (_fin(te) and _fin(tn)):
             return bool(cfg.get("lateral_allow_missing", True))
 
-        dt = te - tn  # left-of means positive per Frenet convention
-        val = abs(dt)  # magnitude must match target; side enforced via lat_rel
+        dt = te - tn
+        val = abs(dt)
         return (val >= (lo - tol)) and (val <= (hi + tol))
 
-    # inside/outside would need driving rules (not implemented)
     if bool(cfg.get("debug_match_block", False)):
         print(f"[change_space_gap] direction '{direction}' not supported (need inside/outside logic)")
     return False
@@ -724,21 +664,6 @@ def _check_keep_space_gap(
     cfg: Dict[str, Any],
     direction: str,
 ) -> bool:
-    """
-    OSC 8.8.3.5 keep_space_gap:
-      - Sample the space gap at action start (t0) along the requested direction.
-      - Enforce that gap (magnitude and sign/orientation) 'during' the window [t0..t1].
-      - direction ∈ {"longitudinal", "lateral"}  (inside/outside needs driving rules → not implemented)
-
-    Uses Frenet coordinates if available:
-      longitudinal → Δs = s_ego - s_npc
-      lateral      → Δt = t_ego - t_npc  (left positive)
-
-    We enforce:
-      • |Δaxis| ≈ |Δaxis(t0)| within ±space_gap_tol
-      • sign(Δaxis) consistent with sign at t0 (unless magnitude near 0)
-      • (optional) categorical consistency via rel_position/lat_rel when present
-    """
     if npc is None:
         return False
 
@@ -748,10 +673,9 @@ def _check_keep_space_gap(
     tol = float(cfg.get("space_gap_tol", cfg.get("distance_tol", 2.0)))
     during_mode = str(cfg.get("during_mode", _DEFAULT_CFG["during_mode"])).lower()
     during_max_false = int(cfg.get("during_max_false", 0))
-    cov_need = float(cfg.get("speed_min_coverage", 0.9))  # reuse coverage threshold
+    cov_need = float(cfg.get("speed_min_coverage", 0.9))
 
     def _ok_sign(a: float, b: float, eps: float) -> bool:
-        # allow sign flip only if one of them is near zero (≤ eps)
         if not (np.isfinite(a) and np.isfinite(b)):
             return False
         if abs(a) <= eps or abs(b) <= eps:
@@ -769,7 +693,6 @@ def _check_keep_space_gap(
             return False
 
         gap0 = float(s_e[t0] - s_n[t0])
-        # series during window
         se = np.asarray(s_e[sl], dtype=float)
         sn = np.asarray(s_n[sl], dtype=float)
         m = np.isfinite(se) & np.isfinite(sn)
@@ -782,13 +705,11 @@ def _check_keep_space_gap(
         mag_ok[m] = np.abs(np.abs(gaps[m]) - abs(gap0)) <= tol
         sign_ok[m] = np.array([_ok_sign(g, gap0, tol) for g in gaps[m]])
 
-        # optional categorical check
         pos = feats.rel_position.get((ego, npc))
         if pos is not None:
             pos_arr = np.asarray(pos[sl], dtype=object)
             need = "front" if gap0 >= 0 else "back"
             pos_m = (pos_arr == need)
-            # treat 'unknown' as missing; only enforce where known
             known = (pos_arr == "front") | (pos_arr == "back")
             cat_ok = ~known | pos_m
             ok = mag_ok & sign_ok & cat_ok
@@ -799,15 +720,13 @@ def _check_keep_space_gap(
         t_e = feats.t.get(ego)
         t_n = feats.t.get(npc)
         if t_e is None or t_n is None:
-            # allow missing if configured (mirrors lateral distance behavior)
             return bool(cfg.get("lateral_allow_missing", True))
         if t0 >= len(t_e) or t0 >= len(t_n):
             return False
         if not (np.isfinite(t_e[t0]) and np.isfinite(t_n[t0])):
-            # if we can't sample target at t0, fail (semantics: sample on invoke)
             return False
 
-        gap0 = float(t_e[t0] - t_n[t0])   # left positive
+        gap0 = float(t_e[t0] - t_n[t0])
         te = np.asarray(t_e[sl], dtype=float)
         tn = np.asarray(t_n[sl], dtype=float)
         m = np.isfinite(te) & np.isfinite(tn)
@@ -820,7 +739,6 @@ def _check_keep_space_gap(
         mag_ok[m] = np.abs(np.abs(gaps[m]) - abs(gap0)) <= tol
         sign_ok[m] = np.array([_ok_sign(g, gap0, tol) for g in gaps[m]])
 
-        # optional categorical check: enforce left/right where known
         lat = feats.lat_rel.get((ego, npc))
         if lat is not None:
             lat_arr = np.asarray(lat[sl], dtype=object)
@@ -832,10 +750,8 @@ def _check_keep_space_gap(
         else:
             ok = mag_ok & sign_ok
     else:
-        # inside/outside not supported without driving rules
         return False
 
-    # apply "during" semantics
     if during_mode == "coverage":
         cov = float(np.sum(ok) / np.sum(m)) if np.any(m) else 0.0
         return cov >= cov_need
@@ -857,10 +773,6 @@ def _check_assign_position_xy(
     x_target: float,
     y_target: float,
 ) -> bool:
-    """
-    assign_position to absolute XY (map frame). Succeeds when the end-anchored
-    distance to (x*,y*) is within position_reach_tol.
-    """
     x = _get(feats.x, ego)
     y = _get(feats.y, ego)
     if t1 >= x.size or t1 >= y.size:
@@ -882,10 +794,6 @@ def _check_assign_position_st(
     s_target: float,
     t_target: float,
 ) -> bool:
-    """
-    assign_position to Frenet (s,t). Succeeds when |s-s*| <= st_reach_tol_s and
-    |t-t*| <= st_reach_tol_t at window end.
-    """
     s = feats.s.get(ego)
     t = feats.t.get(ego)
     if s is None or t is None:
@@ -913,10 +821,6 @@ def _check_assign_orientation_yaw(
     cfg: Dict[str, Any],
     yaw_arg: Dict[str, Any],
 ) -> bool:
-    """
-    assign_orientation: evaluate only yaw; action ends when yaw reaches target.
-    End-anchored check: |wrap(yaw[t1] - yaw_target)| <= yaw_reach_tol
-    """
     if isinstance(yaw_arg, (int, float)):
         spec = {"value": float(yaw_arg), "unit": "rad"}
     elif isinstance(yaw_arg, dict):
@@ -939,10 +843,6 @@ def _check_assign_speed(
     cfg: Dict[str, Any],
     speed_arg: Dict[str, Any],
 ) -> bool:
-    """
-    assign_speed: end-anchored speed check.
-    Succeeds when speed[ego][t1] matches the target (value or range).
-    """
     if not isinstance(speed_arg, dict):
         return False
     spec = _norm_physical(speed_arg, "speed")
@@ -955,7 +855,6 @@ def _check_assign_speed(
     val = float(v[t1])
     return (val >= lo) and (val <= hi)
 
-
 def _check_assign_acceleration(
     feats,
     ego: str,
@@ -965,10 +864,6 @@ def _check_assign_acceleration(
     cfg: Dict[str, Any],
     accel_arg: Dict[str, Any],
 ) -> bool:
-    """
-    assign_acceleration: end-anchored scalar acceleration check.
-    Succeeds when accel[ego][t1] matches the target (value or range).
-    """
     if not isinstance(accel_arg, dict):
         return False
     spec = _norm_physical(accel_arg, "acceleration")
@@ -989,21 +884,11 @@ def _check_remain_stationary(
     t1: int,
     cfg: Dict[str, Any],
 ) -> bool:
-    """
-    OSC 8.8.2.10 remain_stationary:
-      - Throughout [t0..t1], translational speed must be ~0 in all directions.
-      - We enforce:
-         • scalar speed <= stationary_speed_tol
-         • and, where available, |s_dot| <= stationary_axis_tol and |t_dot| <= stationary_axis_tol
-      - Uses strict “during” semantics with up to 'stationary_max_false' allowed violations.
-    """
-
     sl = slice(t0, t1 + 1)
     tol_v  = float(cfg.get("stationary_speed_tol", 0.15))
     tol_ax = float(cfg.get("stationary_axis_tol", 0.15))
     max_false = int(cfg.get("stationary_max_false", 0))
 
-    # presence mask
     pres = feats.present.get(ego)
     if pres is None:
         return False
@@ -1011,12 +896,10 @@ def _check_remain_stationary(
     if not np.any(m_pres):
         return False
 
-    # scalar speed
-    v = _get(feats.speed, ego)  # assumes helper exists; returns 1D np.array
+    v = _get(feats.speed, ego)
     v_win = np.asarray(v[sl], dtype=float)
     v_ok = (~np.isfinite(v_win)) | (np.abs(v_win) <= tol_v)
 
-    # s_dot / t_dot (optional; only enforce where finite)
     sdot_ok = None
     tdot_ok = None
 
@@ -1036,7 +919,6 @@ def _check_remain_stationary(
     if tdot_ok is not None:
         ok = ok & tdot_ok
 
-    # Only evaluate on present frames
     eval_mask = m_pres
     violations = int(np.sum(eval_mask & ~ok))
     return violations <= max_false
@@ -1049,15 +931,6 @@ def _check_keep_speed(
     t1: int,
     cfg: Dict[str, Any],
 ) -> bool:
-    """
-    OSC 8.8.2.13 keep_speed:
-      - Sample scalar speed at action start (t0) → v0
-      - Require |v(t) - v0| <= keep_speed_tol during [t0..t1]
-      - Apply 'during' semantics (coverage or universal) and only evaluate
-        frames where ego is present and speed is finite.
-    """
-    import numpy as np
-
     v = _get(feats.speed, ego)
     if t0 >= v.size or not np.isfinite(v[t0]):
         return False
@@ -1101,17 +974,6 @@ def _check_change_acceleration(
     rate_profile: Optional[str] = None,
     rate_peak_arg: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """
-    OSC 8.8.2.14 change_acceleration
-      - Always require end-anchored accel target at t1.
-      - If 'rate_peak' (jerk) provided, require that within [t0..t1] the max |jerk| >= target.
-      - 'rate_profile' is parsed but not shaped here (macro support could be added later).
-
-    Jerk is estimated from accel by 1st difference: j[t] ≈ (a[t] - a[t-1]) * fps.
-    """
-    import numpy as np
-
-    # 1) End-anchored acceleration target
     spec = _norm_physical(target_accel_arg, "acceleration")
     a_tol = float(cfg.get("accel_value_tol", 0.2))
     lo, hi = _val_or_range_to_bounds(spec, tol=a_tol)
@@ -1123,20 +985,13 @@ def _check_change_acceleration(
     if not (lo <= a_end <= hi):
         return False
 
-    # 2) Optional jerk peak requirement
     if rate_peak_arg is not None:
-        # interpret jerk units (assume m/s^3 if unit omitted)
-        # accept {"value": x, "unit": "m/s^3"} or {"range":[lo,hi], "unit":...}
         j_tol = float(cfg.get("jerk_value_tol", 0.2))
-        # Minimal normalization: reuse _norm_physical; falls back to raw if unit unknown
-        j_spec = _norm_physical(rate_peak_arg, "jerk")  # may just pass through numbers
-        # Convert to [lo,hi] where lo is the minimum required ABS jerk peak
+        j_spec = _norm_physical(rate_peak_arg, "jerk")
         if "value" in j_spec:
             j_req_lo = float(j_spec["value"]) - j_tol
-            j_req_hi = float("inf")  # peak ≥ target
         elif "range" in j_spec:
             j_req_lo = float(min(j_spec["range"])) - j_tol
-            j_req_hi = float("inf")  # interpret as at least the lower bound
         else:
             return False
 
@@ -1149,7 +1004,6 @@ def _check_change_acceleration(
             return False
         pres_win = np.asarray(pres[sl], dtype=float) > 0.5
 
-        # finite jerk samples exist where both a[t] and a[t-1] are finite
         if a_win.size < 2:
             return False
         a_prev = a_win[:-1]
@@ -1175,14 +1029,6 @@ def _check_keep_acceleration(
     t1: int,
     cfg: Dict[str, Any],
 ) -> bool:
-    """
-    OSC 8.8.2.15 keep_acceleration:
-      - Sample scalar longitudinal acceleration at start (t0) -> a0
-      - Require |a(t) - a0| <= keep_accel_tol during [t0..t1]
-      - Apply 'during' semantics (coverage vs universal) on frames where ego is present & accel is finite.
-    """
-    import numpy as np
-
     a = _get(feats.accel, ego)
     if t0 >= a.size or not np.isfinite(a[t0]):
         return False
@@ -1225,21 +1071,8 @@ def _check_follow_lane(
     cfg: Dict[str, Any],
     target_lane: Optional[int],
 ) -> bool:
-    """
-    OSC 8.8.3.2 follow_lane (simplified):
-      • Actor remains in the SAME lane from start to end.
-        - If target_lane is provided: lane == target_lane for the whole window.
-        - Else: lane == lane(t0) for the whole window.
-
-    Uses:
-      feats.lane_idx[ego] (lane equality over [t0..t1])
-      feats.present[ego]  (evaluation mask)
-    """
-    import numpy as np
-
     sl = slice(t0, t1 + 1)
 
-    # presence mask for evaluation
     pres = feats.present.get(ego)
     if pres is None:
         return False
@@ -1247,7 +1080,6 @@ def _check_follow_lane(
     if not np.any(pres_win):
         return False
 
-    # lane series
     lane_series = _get(feats.lane_idx, ego)
     lane_win = np.asarray(lane_series[sl], dtype=float)
     lane_known = np.isfinite(lane_win)
@@ -1255,7 +1087,6 @@ def _check_follow_lane(
     if not np.any(eval_lane):
         return False
 
-    # required lane id
     if target_lane is not None:
         lane_req = int(target_lane)
     else:
@@ -1266,7 +1097,6 @@ def _check_follow_lane(
 
     lane_eq = np.rint(lane_win[eval_lane]).astype(int) == lane_req
 
-    # gating semantics
     lane_mode = str(cfg.get("lane_follow_mode", "all")).lower()
     if lane_mode == "coverage":
         need = float(cfg.get("lane_min_coverage", 0.95))
@@ -1287,20 +1117,12 @@ def _check_change_time_headway(
     target_time_arg: Dict[str, Any],
     direction: str,
 ) -> bool:
-    """
-    OSC 8.8.3.6 change_time_headway:
-      - At END (t1), enforce:
-          • categorical orientation vs reference (ahead/back)
-          • |time_headway(ego,ref)| within target bounds (seconds)
-      - time_headway ≈ |Δs| / |v_long(ego)|
-    """
     if npc is None:
         return False
     dir_l = (direction or "").lower()
     if dir_l not in ("ahead", "behind"):
         return False
 
-    # categorical orientation at end (prefer rel_position)
     pos = feats.rel_position.get((ego, npc))
     if pos is None or t1 >= len(pos):
         return False
@@ -1308,12 +1130,10 @@ def _check_change_time_headway(
     if str(pos[t1]) != need:
         return False
 
-    # target bounds (seconds)
     spec = _norm_physical(target_time_arg, "time") if isinstance(target_time_arg, dict) else {"value": target_time_arg}
     tol = float(cfg.get("time_headway_tol", 0.30))
     lo, hi = _time_val_or_range_to_bounds(spec, tol=tol)
 
-    # headway magnitude at end
     min_speed = float(cfg.get("min_speed_for_headway", 0.30))
     h_mag = _headway_time_mag(feats, ego, npc, t1, min_speed=min_speed)
     if h_mag is None:
@@ -1328,19 +1148,9 @@ def _check_keep_time_headway(
     t1: int,
     cfg: Dict[str, Any],
 ) -> bool:
-    """
-    OSC 8.8.3.7 keep_time_headway:
-      - Sample target headway at start (t0): h0 (signed via rel_position if available).
-        We actually enforce the **magnitude** with categorical orientation 'during' the window.
-      - During [t0..t1], require:
-          • orientation (front/back) matches sign of h0 wherever known
-          • |headway_mag(t) - |h0|| <= tol on evaluable frames (presence & speed >= min)
-      - Apply 'during' semantics via coverage (headway_min_coverage) or 'all' with allowed violations.
-    """
     if npc is None:
         return False
 
-    # Determine sign via rel_position at t0; fall back to sign(Δs)
     sign0 = None
     pos0 = feats.rel_position.get((ego, npc))
     if pos0 is not None and t0 < len(pos0):
@@ -1360,14 +1170,12 @@ def _check_keep_time_headway(
     if h0_mag is None:
         return False
 
-    # window series
     sl = slice(t0, t1 + 1)
     pres = feats.present.get(ego)
     if pres is None:
         return False
     pres_win = np.asarray(pres[sl], dtype=float) > 0.5
 
-    # orientation categorical over window
     pos_series = feats.rel_position.get((ego, npc))
     orient_ok = None
     if pos_series is not None:
@@ -1376,7 +1184,6 @@ def _check_keep_time_headway(
         known = (pos_win == "front") | (pos_win == "back")
         orient_ok = (~known) | (pos_win == need_str)
 
-    # numeric headway magnitude over window (no feats.T dependency)
     idxs = list(range(t0, t1 + 1))
     eval_mask = np.zeros(len(idxs), dtype=bool)
     h_arr = np.full(len(idxs), np.nan, dtype=float)
@@ -1391,7 +1198,6 @@ def _check_keep_time_headway(
     if not np.any(eval_mask):
         return False
 
-    # compare magnitudes within tolerance
     tol = float(cfg.get("time_headway_tol", 0.30))
     mag_ok = np.zeros_like(eval_mask, dtype=bool)
     mag_ok[eval_mask] = np.abs(h_arr[eval_mask] - h0_mag) <= tol
@@ -1418,38 +1224,39 @@ def _check_keep_lane(
     t1: int,
     cfg: Dict[str, Any],
 ) -> bool:
-    """
-    Movement modifier keep_lane():
-      • Actor remains in the SAME lane from start to end,
-        using the lane at t0 as the implicit target.
-      • Implemented by delegating to _check_follow_lane with target_lane=None.
-    """
     return _check_follow_lane(feats, ego, npc, t0, t1, cfg, target_lane=None)
     
 
 # ======================================================================================
 # Compiler: build_block_query(call, fps, cfg) → (BlockQuery, candidate_pairs_or_None)
 # ======================================================================================
-def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, Any]] = None) -> Tuple[BlockQuery, Optional[List[Tuple[str, Optional[str]]]]]:
-    """
-    Translate one normalized call (from constraints_from_ir) into a BlockQuery.
-    """
-    cfg = {**_DEFAULT_CFG, **(cfg or {})}
-    cfg.setdefault("fps", float(fps))
+def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, Any]] = None):
+    cfg_eff = _DEFAULT_CFG.copy()
+    if cfg:
+        cfg_eff.update({k: v for k, v in cfg.items() if v is not None})
+    cfg_eff.setdefault("fps", float(fps))
+
     ego = call.get("actor")
     if not ego:
         raise ValueError("build_block_query: missing 'actor' in call")
 
     # --- duration → frames ---
     dur = (call.get("action_args") or {}).get("duration") or {}
+
     if "value" in dur:
-        val = float(dur["value"]); unit = str(dur.get("unit", "second")).lower()
+        val  = float(dur["value"])
+        unit = str(dur.get("unit", "second")).lower()
         if unit in ("frame", "frames"):
             duration_frames = max(1, int(round(val)))
         else:
             duration_frames = max(1, int(round(val * float(fps))))
+        # action-scope window: exact length, no early end
+        cfg_eff["duration_scope"] = "action"
+        cfg_eff["allow_shorter_end"] = False
     else:
-        duration_frames = max(1, int(round(float(cfg.get("default_window_s", 5.0)) * float(fps))))
+        duration_frames = max(1, int(round(float(cfg_eff.get("default_window_s", 5.0)) * float(fps))))
+        cfg_eff.setdefault("duration_scope", "block")
+        cfg_eff.setdefault("allow_shorter_end", True)
 
     checks: List[Callable[..., bool]] = []
     referenced: List[str] = []
@@ -1458,39 +1265,32 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         if actor_name and actor_name != ego and actor_name not in referenced:
             referenced.append(actor_name)
 
-    # always gate by presence coverage
+    # presence gate
     checks.append(lambda F, E, N, t0, t1, C: _check_presence(F, E, N, t0, t1, C))
 
-    # --- ACTION ARGUMENTS (not modifiers) ---
     action_name = str(call.get("action", "")).lower()
     aargs = (call.get("action_args") or {})
-
-    # Helpers already defined above:
-    #  - _ref(actor_name)
-    #  - _parse_unit_scale()
-    #  - _check_* functions
+    if cfg_eff.get("debug_units"):
+        print(f"[build_block_query] action={action_name}  modifiers={[(m.get('name'), m.get('args')) for m in (call.get('modifiers') or [])]}")
+    
+    
+    # Helpers already defined above …
     if action_name == "change_lane":
-        # Two signatures (OSC 2.0):
-        #   1) num_of_lanes:uint, side:lane_change_side, reference:physical_object [, offset, rate_profile, rate_peak]
-        #   2) target: lane [, offset, rate_profile, rate_peak]
         a_num  = aargs.get("num_of_lanes") or aargs.get("num_lanes") or aargs.get("count")
         a_side = aargs.get("side")
         a_ref  = aargs.get("reference") or ego
 
         target_lane = aargs.get("target")
         if isinstance(target_lane, dict) and "lane" in target_lane:
-            # validator/IR may provide {"lane": <int>} for resolved targets
             target_lane = target_lane.get("lane")
 
-        # record referenced actor (if any)
         if a_ref and a_ref != ego:
             referenced.append(a_ref)
 
-        # (Offset / rate_profile / rate_peak intentionally ignored in this recognizer; see docstring)
         checks.append(
-        (lambda target_lane=target_lane, a_num=a_num, a_side=a_side, a_ref=a_ref:
-            (lambda F, E, N, t0, t1, C:
-                _check_change_lane_action(F, E, N, t0, t1, C, target_lane, a_num, a_side, a_ref)))()
+            (lambda target_lane=target_lane, a_num=a_num, a_side=a_side, a_ref=a_ref:
+                (lambda F, E, N, t0, t1, C:
+                    _check_change_lane_action(F, E, N, t0, t1, C, target_lane, a_num, a_side, a_ref)))()
         )
 
     elif action_name == "assign_position":
@@ -1506,7 +1306,6 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         if not isinstance(target, dict):
             raise ValueError("assign_position target must be a dict containing either (x,y) or (s,t) or an ODR dict")
 
-        # XY -> absolute map coordinates
         if ("x" in target) and ("y" in target):
             scale = _parse_unit_scale(target)
             xt = float(target["x"]) * scale
@@ -1516,26 +1315,24 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                     (lambda F, E, N, t0, t1, C: _check_assign_position_xy(F, E, N, t0, t1, C, xt, yt)))()
             )
 
-        # ST -> Frenet coordinates
         elif ("s" in target) and ("t" in target):
             scale = _parse_unit_scale(target)
             st = float(target["s"]) * scale
             tt = float(target["t"]) * scale
+        
             checks.append(
                 (lambda st=st, tt=tt:
-                    (lambda F, E, N, t0, t1, C: _check_assign_position_st(F, E, N, t0, t1, C, st, tt)))
+                    (lambda F, E, N, t0, t1, C: _check_assign_position_st(F, E, N, t0, t1, C, st, tt)))()
             )
 
-        # ODR dict (road/lane/…): if numeric s/t present, treat as ST for now
         elif {"road", "lane"} <= {k.lower() for k in target.keys()}:
             s_val = target.get("s"); t_val = target.get("t")
             if (s_val is not None) and (t_val is not None):
                 st = float(s_val); tt = float(t_val)
                 checks.append(
                     (lambda st=st, tt=tt:
-                        (lambda F, E, N, t0, t1, C: _check_assign_position_st(F, E, N, t0, t1, C, st, tt)))
+                        (lambda F, E, N, t0, t1, C: _check_assign_position_st(F, E, N, t0, t1, C, st, tt)))()
                 )
-            # else: leave for future ODR resolution (no check added)
         else:
             raise ValueError("assign_position target must include (x,y) or (s,t), or be an ODR dict with road/lane/(s,t)")
         
@@ -1622,9 +1419,7 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
     elif action_name == "keep_acceleration":
         checks.append((lambda: (lambda F, E, N, t0, t1, C: _check_keep_acceleration(F, E, N, t0, t1, C)))())
 
-    # --- assign_speed ---
     elif action_name == "assign_speed":
-        # accept new 'target' and legacy 'speed'
         speed_arg = aargs.get("target") or aargs.get("speed")
         if speed_arg is None:
             raise ValueError("assign_speed requires 'target' (or legacy 'speed')")
@@ -1645,14 +1440,11 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
         )
 
     elif action_name == "assign_orientation":
-        # Expect orientation_3d dict; allow plain yaw angle as a shorthand
         tgt = aargs.get("target") or aargs.get("orientation") or aargs.get("orientation_3d")
         yaw_arg = None
         if isinstance(tgt, dict):
-            # canonical orientation_3d
-            yaw_arg = tgt.get("yaw") or tgt.get("angle")  # allow {'angle': ...} fallback
+            yaw_arg = tgt.get("yaw") or tgt.get("angle")
         else:
-            # allow a direct angle Physical as shorthand
             yaw_arg = tgt
         if yaw_arg is None:
             raise ValueError("assign_orientation requires 'target' with a yaw angle")
@@ -1666,19 +1458,26 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
     for m in (call.get("modifiers") or []):
         name = str(m.get("name", "")).lower()
         args = m.get("args", {}) or {}
-
+        if cfg.get("debug_units"):
+            print(f"[build_block_query] visiting modifier: {name}")
         if name == "speed":
             if "same_as" in args:
                 other = args.get("same_as"); _ref(other)
                 at = args.get("at")
                 checks.append(lambda other=other, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_speed_same_as(F, E, other, t0, t1, C, at))()
-                )
+                            (lambda F, E, N, t0, t1, C: _check_speed_same_as(F, E, other, t0, t1, C, at))())
             else:
                 at = args.get("at")
-                sp = args.get("speed") or {}
-                checks.append(lambda sp=sp, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_speed(F, E, N, t0, t1, C, sp, at)))
+                sp_raw = args.get("speed") or {}
+                sp = _norm_physical(sp_raw, "speed")  # convert to m/s now
+                lo, hi = _val_or_range_to_bounds(sp, tol=float(cfg.get("speed_value_tol", 0.10)))
+                if cfg.get("debug_units"):
+                    print(f"[build_block_query] speed modifier → [{lo:.2f}, {hi:.2f}] m/s (at={at})")
+                checks.append(
+                    _label(f"speed in [{lo:.2f},{hi:.2f}] m/s at={at}",
+                        (lambda sp=sp, at=at:
+                                (lambda F,E,N,t0,t1,C: _check_speed(F,E,N,t0,t1,C,sp,at)))())
+                )
 
         elif name == "position":
             at = args.get("at", "start")
@@ -1706,30 +1505,37 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
 
         elif name == "lane":
             at = args.get("at", "start")
-            # NOTE: accept optional 'from' to be spec-friendly; not used in this checker
-            _from = args.get("from")  # parsed, currently unused
 
             if "same_as" in args:
                 other = args.get("same_as"); _ref(other)
-                checks.append(lambda other=other, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_same_as(F, E, other, t0, t1, C, at))())
-                
+                checks.append(
+                    _label(f"lane same_as {other} at={at}",
+                        (lambda other=other, at=at:
+                                (lambda F,E,N,t0,t1,C: _check_lane_same_as(F,E,other,t0,t1,C,at)))())
+                )
+
             elif "side_of" in args and "side" in args:
                 other = args.get("side_of"); _ref(other)
-                side = args.get("side")
-                lane = args.get("lane")  # optional
-                checks.append(lambda other=other, side=side, lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_side_of(F, E, other, t0, t1, C, lane, side, at))())
+                side  = args.get("side")
+                lane  = args.get("lane")  # optional filter
+                title = f"lane side_of {other} side={side} at={at}"
+                if lane is not None:
+                    title += f" & lane=={lane}"
+                checks.append(
+                    _label(title,
+                        (lambda other=other, side=side, lane=lane, at=at:
+                                (lambda F,E,N,t0,t1,C: _check_lane_side_of(F,E,other,t0,t1,C,lane,side,at)))())
+                )
+
             elif "lane" in args:
                 lane = int(args.get("lane"))
-                checks.append(lambda lane=lane, at=at:
-                              (lambda F, E, N, t0, t1, C: _check_lane_number(F, E, N, t0, t1, C, lane, at))())
+                checks.append(
+                    _label(f"lane == {lane} at={at}",
+                        (lambda lane=lane, at=at:
+                                (lambda F,E,N,t0,t1,C: _check_lane_number(F,E,N,t0,t1,C,lane,at)))())
+                )
 
         elif name == "change_lane":
-            # Accept lane delta as:
-            #   • lane: {value: ±k} or plain number
-            #   • side: left|right  (or alias: from)
-            #   If lane delta missing but side/from provided → default to 1
             dl = args.get("lane")
             if isinstance(dl, (int, float)):
                 delta_lane = {"value": float(dl)}
@@ -1739,9 +1545,8 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
             side = args.get("side") or args.get("from")
 
             if delta_lane is None and side is not None:
-                delta_lane = {"value": 1}  # default one-lane shift to the given side
+                delta_lane = {"value": 1}
 
-            # If still nothing to check, skip adding a check
             if delta_lane is not None:
                 checks.append(
                     (lambda d=delta_lane, side=side:
@@ -1780,35 +1585,33 @@ def build_block_query(call: Dict[str, Any], fps: int, cfg: Optional[Dict[str, An
                         _check_distance_traveled(F, E, N, t0, t1, C, dist)))()
             )
     
-        # --- keep_speed ---
         elif name == "keep_speed":
-            # Enforce that the sampled speed at t0 is maintained during [t0..t1]
             checks.append(
                 (lambda: (lambda F, E, N, t0, t1, C: _check_keep_speed(F, E, N, t0, t1, C)))()
             )
 
         elif name == "keep_lane":
-            # Keep the current lane over the whole window; target is lane(t0)
             checks.append(
                 (lambda: (lambda F, E, N, t0, t1, C: _check_keep_lane(F, E, N, t0, t1, C)))()
             )
 
     Q = BlockQuery(
-        ego=ego,
+        ego=str(ego),
         npc_candidates=referenced[:],
         duration_frames=int(duration_frames),
         checks=checks,
-        cfg=cfg
+        cfg=cfg_eff,
     )
 
-    pairs = None
-    if referenced:
-        pairs = [(ego, r) for r in referenced]
+    pairs = [(ego, r) for r in referenced] if referenced else None
 
-    # Debug
-    print(f"[build_block_query] ego={ego}  duration_frames={duration_frames}  fps={fps}")
-    if referenced:
-        print(f"[build_block_query] referenced NPCs: {referenced}")
-    print(f"[build_block_query] compiled checks: {len(checks)}")
+    if Q.cfg.get("debug_checks"):
+        print(f"[build_block_query] ego={ego}  duration_frames={duration_frames}  fps={fps}")
+        if referenced:
+            print(f"[build_block_query] referenced NPCs: {referenced}")
+        print(f"[build_block_query] compiled checks: {len(checks)}")
 
+    roles = _roles_used_by_call_local(call)
+    Q.arity = 1 if len(roles) == 1 else 2
+    Q.roles_used = roles
     return Q, pairs

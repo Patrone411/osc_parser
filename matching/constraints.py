@@ -137,7 +137,7 @@ def _flatten_blocks(block: Dict[str, Any], out: List[Dict[str, Any]]) -> None:
     for child in block.get("children", []):
         _flatten_blocks(child, out)
 
-def constraints_from_ir(scenarios: List[ScenarioNode]) -> Dict[str, Any]:
+def constraints_from_ir(scenarios):
     """
     Returns a per-scenario dict with preserved block structure:
 
@@ -161,8 +161,16 @@ def constraints_from_ir(scenarios: List[ScenarioNode]) -> Dict[str, Any]:
       }
     }
     """
+
+    if isinstance(scenarios, dict):
+        scn_list = list(scenarios.values())
+    elif isinstance(scenarios, (list, tuple)):
+        scn_list = scenarios
+    else:
+        raise TypeError("scenarios must be list/tuple of ScenarioNode or dict[str, ScenarioNode]")
+    
     out: Dict[str, Any] = {}
-    for scn in scenarios:
+    for scn in scn_list:
         scn_dict: Dict[str, Any] = {
             "actors": {name: {"type": inst.type} for name, inst in scn.actors.items()},
             "blocks": [],

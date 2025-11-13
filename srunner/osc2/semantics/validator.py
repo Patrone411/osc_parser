@@ -72,7 +72,7 @@ def infer_type(arg: ArgValue):
 
         if phys_name:
             # e.g. "length", "time", "speed", "acceleration"
-            print(f"[infer_type] {arg.name}={v} -> {phys_name} (unit={getattr(u,'unit_name',getattr(u,'name','?'))})")
+            #print(f"[infer_type] {arg.name}={v} -> {phys_name} (unit={getattr(u,'unit_name',getattr(u,'name','?'))})") #debug
             return phys_name
 
         # Fallback: infer by canonical unit name

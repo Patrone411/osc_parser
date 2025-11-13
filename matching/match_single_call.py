@@ -1,71 +1,90 @@
-# osc_parser/matching/single_call_fast.py
+# osc_parser/matching/match_single_call.py
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple, Optional
+import copy
 
-# Compiler (call → BlockQuery) and generic sliding-window matcher
 from .spec import build_block_query, BlockQuery
 from .match_block import match_block
+from .features import TagFeatures
 
 
-def match_single_call(
-    feats,
+def _resolve_roles_in_obj(obj: Any, binding: Dict[str, str]) -> Any:
+    """
+    Recursively replace any string equal to a role name with its bound actor_id.
+    This is safe for your flattened calls because role names (e.g., 'ego_vehicle',
+    'second_car', 'npc') only appear in the actor/reference fields and not in units.
+    """
+    if isinstance(obj, str):
+        return binding.get(obj, obj)
+    if isinstance(obj, list):
+        return [_resolve_roles_in_obj(x, binding) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_resolve_roles_in_obj(x, binding) for x in obj)
+    if isinstance(obj, dict):
+        # keep keys, resolve values only
+        return {k: _resolve_roles_in_obj(v, binding) for k, v in obj.items()}
+    return obj
+
+
+def _call_with_binding(call: Dict[str, Any], binding: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Produce a copy of `call` where all role strings are replaced by concrete actor ids.
+    Also maps call['actor'] (which is a role) to the bound actor id.
+    """
+    c = copy.deepcopy(call)
+    # First resolve all values
+    c = _resolve_roles_in_obj(c, binding)
+    # Ensure the top-level 'actor' is the concrete actor id
+    actor_role = call.get("actor")
+    if isinstance(actor_role, str) and actor_role in binding:
+        c["actor"] = binding[actor_role]
+    return c
+
+
+def match_for_binding(
+    feats: TagFeatures,
     call: Dict[str, Any],
-    fps: int = 10,
+    binding: Dict[str, str],
+    *,
+    fps: int,
+    max_results: int = 2000,
     cfg: Optional[Dict[str, Any]] = None,
-    pairs: Optional[List[Tuple[str, Optional[str]]]] = None,
-    max_results: int = 5000,
 ) -> List[Dict[str, Any]]:
     """
-    Thin adapter:
-      1) compile a single normalized call dict into a BlockQuery
-      2) run the generic match_block() over one segment's TagFeatures
+    Run the matcher for a SINGLE flattened call on ONE segment with a specific role->actor binding.
 
-    Args:
-        feats: TagFeatures for ONE segment
-        call:  normalized call (from constraints_from_ir(...)"calls_flat"[i])
-        fps:   sampling rate (frames per second)
-        cfg:   optional dict of tolerances/knobs (merged with spec defaults)
-        pairs: optional list of (ego, npc) candidate bindings to restrict search.
-               If None, we'll use the compiler's referenced actors (if any).
-        max_results: cap on matches to return for this segment.
-
-    Returns:
-        List[{"ego": str, "npc": Optional[str], "t_start": int, "t_end": int}]
+    Returns a list of hits: {"ego","npc","t_start","t_end"} where npc is always None
+    (we run unary), because all pair references are already closed over inside the checks
+    by resolving roles to concrete actor ids before building the query.
     """
-    Q, candidate_pairs = build_block_query(call, fps=fps, cfg=cfg or {})
-    use_pairs = pairs if pairs is not None else candidate_pairs
-    return match_block(feats, Q, fps=fps, pairs=use_pairs, max_results=max_results)
+    # Resolve role names inside the call into concrete actor ids
+    call_resolved = _call_with_binding(call, binding)
 
+    # Build the query. Your build_block_query already:
+    # - normalizes units
+    # - constructs checks that capture referenced actors by id
+    Q, _pairs_hint_unused = build_block_query(call_resolved, fps=fps, cfg=(cfg or {}))
 
-def match_single_call_across_segments(
-    feats_by_seg: Dict[str, Any],
-    call: Dict[str, Any],
-    fps: int = 10,
-    cfg: Optional[Dict[str, Any]] = None,
-    pairs: Optional[List[Tuple[str, Optional[str]]]] = None,
-    max_results_per_seg: int = 5000,
-) -> List[Dict[str, Any]]:
-    """
-    Convenience wrapper to run a single call across MANY segments.
+    # We run UNARY: checks that need "other" already close over concrete ids.
+    # Force arity=1 to avoid the binary path in match_block.
+    Q.arity = 1
 
-    Args:
-        feats_by_seg: dict {segment_id: TagFeatures}
-        call:          normalized call (from constraints_from_ir)
-        fps:           frames per second
-        cfg:           matcher/compiler config (merged with spec defaults)
-        pairs:         optional fixed candidate bindings (ego,npc) to use
-        max_results_per_seg: cap per segment
+    # Ego id is now a concrete actor id (after _call_with_binding)
+    ego_id = call_resolved.get("actor")
+    if not isinstance(ego_id, str):
+        return []
 
-    Returns:
-        List of hits with 'segment' annotated.
-    """
-    Q, candidate_pairs = build_block_query(call, fps=fps, cfg=cfg or {})
-    use_pairs = pairs if pairs is not None else candidate_pairs
+    # Optional: don’t clobber explicit settings that build_block_query already set
+    if cfg:
+        Q.cfg = {**Q.cfg, **cfg}
 
-    hits: List[Dict[str, Any]] = []
-    for seg_id, feats in feats_by_seg.items():
-        seg_hits = match_block(feats, Q, fps=fps, pairs=use_pairs, max_results=max_results_per_seg)
-        for h in seg_hits:
-            h["segment"] = seg_id
-        hits.extend(seg_hits)
+    # Execute: unary with explicit id list
+    hits = match_block(
+        feats,
+        Q,
+        fps=fps,
+        ids=[ego_id],     # unary path
+        pairs=None,       # not used
+        max_results=max_results,
+    )
     return hits

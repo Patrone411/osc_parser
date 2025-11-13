@@ -4,6 +4,7 @@ from osc_parser.pytree.pytree import ScenarioNode, SerialBlock, ParallelBlock, A
 from .validator import ActionCall as VActionCall, ModifierAttach as VModifierAttach, ArgValue
 from osc_parser.srunner.osc2_dm.physical_types import Physical
 from osc_parser.config_init import _GenericPath
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 
 def _collect_symbols(scn) -> dict:
@@ -324,10 +325,30 @@ def _mod_to_named(m: ModifierCall) -> Dict[str, object]:
             named.setdefault("angle", pos[0])
         #TODO: check true lane counts using topology
         elif m.name == "lane":
-            named.setdefault("lane", pos[0] if pos else named.get("lane"))
-            # optional positional second arg as 'from'
-            if len(pos) >= 2 and isinstance(pos[1], str) and "from" not in named:
-                named["from"] = pos[1]
+            # Positional handling first (index / "from" shorthand)
+            # e.g. lane(3), lane(2, "left")
+            if pos and "lane" not in named and all(k not in named for k in ("side_of", "same_as", "right_of", "left_of")):
+                named.setdefault("lane", pos[0])
+            if len(pos) >= 2 and "side" not in named and isinstance(pos[1], str):
+                named.setdefault("side", pos[1])
+
+            # --- normalize synonyms to canonical keys expected by validator/spec ---
+            # right_of / left_of -> side_of + side
+            if "right_of" in named:
+                named.setdefault("side_of", named.pop("right_of"))
+                named.setdefault("side", "right")
+            if "left_of" in named:
+                named.setdefault("side_of", named.pop("left_of"))
+                named.setdefault("side", "left")
+
+            # 'from' is an alias for 'side' in the "index" + side distance-1 case
+            if "from" in named and "side" not in named:
+                named["side"] = named.pop("from")
+
+            # Finally merge kwargs (so explicit kwargs win over positional defaults)
+            for k, v in (m.kwargs or {}).items():
+                named[k] = v
+
         elif m.name == "change_lane":
             # pos[0] → lane delta (number), pos[1] → side/from
             if pos:
@@ -454,8 +475,6 @@ def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
         # NEW: build the scenario env once
         name_env = _collect_symbols_deep(scn)
         # optional: quick sanity check
-        print("[env] keys:", list(name_env.keys())[:20])
-
         def walk_block(block):
             for ch in getattr(block, "children", []):
                 if isinstance(ch, ActionCall):
@@ -513,3 +532,101 @@ def validate_from_ir(scenarios: List[ScenarioNode], validator) -> None:
 
         for blk in scn.blocks:
             walk_block(blk)
+
+def _iter_scenarios(scenarios: Union[Dict[str, Any], Iterable[Any], Any]) -> Iterable[Any]:
+    """
+    Yield ScenarioNode objects from:
+      - a dict {name: ScenarioNode}
+      - a list/iterable of ScenarioNode
+      - a single ScenarioNode
+    """
+    if scenarios is None:
+        return []
+    if isinstance(scenarios, dict):
+        return scenarios.values()
+    if isinstance(scenarios, (list, tuple, set)):
+        return scenarios
+    # assume single ScenarioNode
+    return [scenarios]
+
+def _pick_scenario(
+    scenarios: Union[Dict[str, Any], Iterable[Any], Any],
+    scenario_name: Optional[str]
+) -> Optional[Any]:
+    """
+    Pick the requested scenario by name (if given), else the first one.
+    """
+    for scn in _iter_scenarios(scenarios):
+        if scenario_name is None:
+            return scn
+        name = getattr(scn, "name", None)
+        if name == scenario_name:
+            return scn
+    return None
+
+def get_min_lanes(
+    scenarios: Union[Dict[str, Any], Iterable[Any], Any],
+    *,
+    scenario_name: Optional[str] = None,
+    default: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Return `path.min_lanes_required` from the given IR scenarios.
+
+    Works regardless of whether your IR is a dict ({name: ScenarioNode}),
+    a list of ScenarioNode, or a single ScenarioNode.
+
+    It looks in this order:
+      1) The merged name environment from `_collect_symbols_deep(scn)` for 'path'
+      2) `scn.vars['path'].value` if present
+    and accepts any of the attributes: `min_lanes_required`, `min_lanes`, `lanes_required`.
+
+    Args:
+        scenarios: IR from IRLowering.lower(...) (dict/list/ScenarioNode)
+        scenario_name: pick a specific scenario (e.g., "top"); if None, use the first
+        default: returned if nothing is found
+
+    Returns:
+        int or `default` if not present.
+    """
+    scn = _pick_scenario(scenarios, scenario_name)
+    if scn is None:
+        return default
+
+    # 1) Try the merged symbol environment that validate_from_ir already uses
+    try:
+        env = _collect_symbols_deep(scn)  # existing helper in this module
+    except Exception:
+        env = {}
+
+    path_obj = env.get("path")
+
+    # 2) Fallback to the IR variable table
+    if path_obj is None:
+        path_var = getattr(scn, "vars", {}).get("path")
+        if path_var is not None:
+            # VarNode has a .value; if path_var is already the object, getattr returns itself
+            path_obj = getattr(path_var, "value", path_var)
+
+    if path_obj is None:
+        return default
+
+    # Accept common attribute spellings
+    for attr in ("min_lanes_required", "min_lanes", "lanes_required"):
+        val = getattr(path_obj, attr, None)
+        if val is not None:
+            try:
+                return int(val)
+            except Exception:
+                pass
+
+    # Also handle dict-like path objects, just in case
+    if isinstance(path_obj, dict):
+        for key in ("min_lanes_required", "min_lanes", "lanes_required"):
+            if key in path_obj:
+                try:
+                    return int(path_obj[key])
+                except Exception:
+                    pass
+
+    return default

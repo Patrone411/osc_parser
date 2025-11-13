@@ -24682,7 +24682,7 @@
           Infinity,
           Infinity
         ],
-        "distance": [
+        "eucl_distance": [
           NaN,
           NaN,
           NaN,
