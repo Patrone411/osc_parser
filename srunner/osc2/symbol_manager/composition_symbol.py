@@ -1,4 +1,4 @@
-from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc2_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
 
 # compositionOperator : 'serial' | 'one_of' | 'parallel';
 

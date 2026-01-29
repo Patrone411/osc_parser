@@ -1,5 +1,5 @@
 import math
-import osc_parser.srunner.osc2_stdlib.misc_object as misc
+import osc2_parser.srunner.osc2_stdlib.misc_object as misc
 
 class Vehicle:
     def __init__(self) -> None:

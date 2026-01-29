@@ -1,7 +1,7 @@
-from osc_parser.srunner.osc2.symbol_manager.inherits_condition_symbol import ScenarioInhertsSymbol
-from osc_parser.srunner.osc2.symbol_manager.qualifiedBehavior_symbol import QualifiedBehaviorSymbol
-from osc_parser.srunner.osc2.symbol_manager.scope import Scope
-from osc_parser.srunner.osc2.utils.log_manager import *
+from osc2_parser.srunner.osc2.symbol_manager.inherits_condition_symbol import ScenarioInhertsSymbol
+from osc2_parser.srunner.osc2.symbol_manager.qualifiedBehavior_symbol import QualifiedBehaviorSymbol
+from osc2_parser.srunner.osc2.symbol_manager.scope import Scope
+from osc2_parser.srunner.osc2.utils.log_manager import *
 
 
 class ScenarioSymbol(QualifiedBehaviorSymbol, Scope):

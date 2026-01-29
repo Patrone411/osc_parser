@@ -1,6 +1,6 @@
-from osc_parser.srunner.osc2.error_manager import *
-from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from osc_parser.srunner.osc2.utils.log_manager import LOG_ERROR
+from osc2_parser.srunner.osc2.error_manager import *
+from osc2_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc2_parser.srunner.osc2.utils.log_manager import LOG_ERROR
 
 
 class EnumValueRefSymbol(BaseSymbol):

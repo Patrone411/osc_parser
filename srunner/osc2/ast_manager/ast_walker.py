@@ -1,5 +1,5 @@
-from osc_parser.srunner.osc2.ast_manager.ast_listener import ASTListener
-from osc_parser.srunner.osc2.ast_manager.ast_node import AST
+from osc2_parser.srunner.osc2.ast_manager.ast_listener import ASTListener
+from osc2_parser.srunner.osc2.ast_manager.ast_node import AST
 
 
 class ASTWalker(object):

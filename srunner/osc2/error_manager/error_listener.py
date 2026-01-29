@@ -3,7 +3,7 @@ import re
 from antlr4.error.ErrorListener import *
 from antlr4.Token import Token
 
-from osc_parser.srunner.osc2.utils.log_manager import LOG_ERROR
+from osc2_parser.srunner.osc2.utils.log_manager import LOG_ERROR
 
 
 class OscErrorListener(ErrorListener):

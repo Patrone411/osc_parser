@@ -243,7 +243,7 @@ struct odr_point inherits route_element:
     t: length
 
 # minimal lane type to satisfy action targets
-struct Lane:
+struct lane:
     id: string
 
 # paths / trajectories
@@ -318,22 +318,22 @@ struct common_lateral_shape inherits any_lateral_shape:
     target: length
 
 
-actor OscActor
+actor osc_actor
 
-actor PhysicalObject inherits OscActor:
+actor physical_object inherits osc_actor:
     box: bounding_box
     obj_color: color
     geometry_reference: string
     center_of_gravity: position_3d
     var pose: pose_3d
-    def object_distance(reference: PhysicalObject, direction: distance_direction, mode: distance_mode) -> length is undefined
+    def object_distance(reference: physical_object, direction: distance_direction, mode: distance_mode) -> length is undefined
     def get_s_coord() -> length is undefined
     def get_t_coord() -> length is undefined
     def get_route_point() -> route_point is undefined
 
-actor StationaryObject inherits PhysicalObject
+actor stationary_object inherits physical_object
 
-actor MovableObject inherits PhysicalObject:
+actor movable_object inherits physical_object:
     def distance_along_route(
         r: route,
         origin: route_distance_enum = route_distance_enum.from_start
@@ -342,90 +342,90 @@ actor MovableObject inherits PhysicalObject:
     var accel_6d: acceleration_6d    # renamed from 'acceleration'
     var speed_value: speed
 
-actor TrafficParticipant inherits MovableObject:
+actor traffic_participant inherits movable_object:
     tf_intended_infrastructure: list of intended_infrastructure
-    def time_to_collision(reference: PhysicalObject) -> time is undefined
-    def time_headway(reference: PhysicalObject) -> time is undefined
-    def space_gap(reference: PhysicalObject, direction: distance_direction) -> length is undefined
+    def time_to_collision(reference: physical_object) -> time is undefined
+    def time_headway(reference: physical_object) -> time is undefined
+    def space_gap(reference: physical_object, direction: distance_direction) -> length is undefined
 
-actor Vehicle inherits TrafficParticipant:
+actor vehicle inherits traffic_participant:
     var category: vehicle_category
     var axles: list of axle
     var rear_overhang: length
 
-actor Person inherits TrafficParticipant
+actor person inherits traffic_participant
 
 
-action OscActor.osc_action
+action osc_actor.osc_action
 
-action MovableObject.action_for_movable_object inherits OscActor.osc_action
+action movable_object.action_for_movable_object inherits osc_actor.osc_action
 
-action MovableObject.move inherits MovableObject.action_for_movable_object
+action movable_object.move inherits movable_object.action_for_movable_object
 
-action MovableObject.remain_stationary inherits MovableObject.action_for_movable_object
+action movable_object.remain_stationary inherits movable_object.action_for_movable_object
 
-action MovableObject.assign_position inherits MovableObject.action_for_movable_object:
+action movable_object.assign_position inherits movable_object.action_for_movable_object:
     position: position_3d
     rp: route_point
     odr: odr_point
 
-action MovableObject.assign_orientation inherits MovableObject.action_for_movable_object:
+action movable_object.assign_orientation inherits movable_object.action_for_movable_object:
     target: orientation_3d
 
-action MovableObject.assign_speed inherits MovableObject.action_for_movable_object:
+action movable_object.assign_speed inherits movable_object.action_for_movable_object:
     target: speed
 
-action MovableObject.assign_acceleration inherits MovableObject.action_for_movable_object:
+action movable_object.assign_acceleration inherits movable_object.action_for_movable_object:
     target: acceleration
 
-action MovableObject.change_speed inherits MovableObject.action_for_movable_object:
+action movable_object.change_speed inherits movable_object.action_for_movable_object:
     target: speed
     rate_profile: dynamic_profile
     rate_peak: acceleration
 
-action MovableObject.keep_speed inherits MovableObject.action_for_movable_object
+action movable_object.keep_speed inherits movable_object.action_for_movable_object
 
-action MovableObject.change_acceleration inherits MovableObject.action_for_movable_object:
+action movable_object.change_acceleration inherits movable_object.action_for_movable_object:
     target: acceleration
     rate_profile: dynamic_profile
     rate_peak: jerk
 
-action MovableObject.keep_acceleration inherits MovableObject.action_for_movable_object
+action movable_object.keep_acceleration inherits movable_object.action_for_movable_object
 
 
 # vehicle actions
-action Vehicle.action_for_vehicle inherits MovableObject.action_for_movable_object
+action vehicle.action_for_vehicle inherits movable_object.action_for_movable_object
 
-action Vehicle.drive inherits Vehicle.action_for_vehicle
+action vehicle.drive inherits vehicle.action_for_vehicle
 
-action Vehicle.follow_lane inherits Vehicle.action_for_vehicle:
+action vehicle.follow_lane inherits vehicle.action_for_vehicle:
     offset: length
     rate_profile: dynamic_profile
     rate_peak: speed
-    target: Lane
+    target: lane
 
-action Vehicle.change_lane inherits Vehicle.action_for_vehicle:
+action vehicle.change_lane inherits vehicle.action_for_vehicle:
     num_of_lanes: int
     side: lane_change_side
-    reference: PhysicalObject
+    reference: physical_object
     offset: length
     rate_profile: dynamic_profile
     rate_peak: speed
-    target: Lane
+    target: lane
 
-action Vehicle.change_space_gap inherits Vehicle.action_for_vehicle:
+action vehicle.change_space_gap inherits vehicle.action_for_vehicle:
     target: length
     direction: gap_direction
-    reference: PhysicalObject
+    reference: physical_object
 
-action Vehicle.keep_space_gap inherits Vehicle.action_for_vehicle:
-    reference: PhysicalObject
+action vehicle.keep_space_gap inherits vehicle.action_for_vehicle:
+    reference: physical_object
     direction: distance_direction
 
 
 # person action
-action Person.action_for_person inherits MovableObject.action_for_movable_object
-action Person.walk inherits Person.action_for_person
+action person.action_for_person inherits movable_object.action_for_movable_object
+action person.walk inherits person.action_for_person
 
 #####################################
 # Modifiers
@@ -433,26 +433,26 @@ action Person.walk inherits Person.action_for_person
 # To satisfy the parser, we prefix with "mod_" and avoid param names equal to types/enums.
 #####################################
 
-modifier mod_position of MovableObject.action_for_movable_object:
+modifier mod_position of movable_object.action_for_movable_object:
     dist_value: length
     time_value: time
-    ahead_of, behind_obj: PhysicalObject
+    ahead_of, behind_obj: physical_object
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_distance of MovableObject.action_for_movable_object:
+modifier mod_distance of movable_object.action_for_movable_object:
     dist_value: length
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_lane of MovableObject.action_for_movable_object:
+modifier mod_lane of movable_object.action_for_movable_object:
     lane_num: uint
-    same_as: PhysicalObject
-    side_of: PhysicalObject
+    same_as: physical_object
+    side_of: physical_object
     side: side_left_right
     from_side: side_left_right
     at_pos: at
@@ -460,15 +460,15 @@ modifier mod_lane of MovableObject.action_for_movable_object:
     track_mode: track
     shape: any_shape
 
-modifier mod_keep_lane of MovableObject.action_for_movable_object:
+modifier mod_keep_lane of movable_object.action_for_movable_object:
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_lateral of MovableObject.action_for_movable_object:
+modifier mod_lateral of movable_object.action_for_movable_object:
     offset: length
-    left_of, right_of, same_as, side_of: PhysicalObject
+    left_of, right_of, same_as, side_of: physical_object
     side: side_left_right
     measure_by: lat_measure_by
     at_pos: at
@@ -476,27 +476,27 @@ modifier mod_lateral of MovableObject.action_for_movable_object:
     track_mode: track
     shape: any_shape
 
-modifier mod_yaw of MovableObject.action_for_movable_object:
+modifier mod_yaw of movable_object.action_for_movable_object:
     angle_value: angle
-    relative_to: PhysicalObject
+    relative_to: physical_object
     measure_by: yaw_measure_by
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_orientation of MovableObject.action_for_movable_object:
+modifier mod_orientation of movable_object.action_for_movable_object:
     yaw: angle
     pitch: angle
     roll: angle
-    relative_to: PhysicalObject
+    relative_to: physical_object
     measured_by: orientation_measured_by
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_along of MovableObject.action_for_movable_object:
+modifier mod_along of movable_object.action_for_movable_object:
     route_ref: route
     start_offset: length
     end_offset: length
@@ -505,13 +505,13 @@ modifier mod_along of MovableObject.action_for_movable_object:
     track_mode: track
     shape: any_shape
 
-modifier mod_keep_position of MovableObject.action_for_movable_object:
+modifier mod_keep_position of movable_object.action_for_movable_object:
     shape: any_shape
     at_pos: at
     move_mode: movement_mode
     track_mode: track
 
-modifier mod_along_trajectory of MovableObject.action_for_movable_object:
+modifier mod_along_trajectory of movable_object.action_for_movable_object:
     traj_ref: trajectory
     start_offset: length
     end_offset: length
@@ -519,49 +519,50 @@ modifier mod_along_trajectory of MovableObject.action_for_movable_object:
     move_mode: movement_mode
     track_mode: track
 
-modifier StationaryObject.location:
+modifier stationary_object.location:
     pose: pose_3d
 
-modifier mod_speed of MovableObject.action_for_movable_object:
+modifier mod_speed of movable_object.action_for_movable_object:
     speed_target: speed
-    faster_than, slower_than, same_as: PhysicalObject
+    faster_than, slower_than, same_as: physical_object
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_acceleration of MovableObject.action_for_movable_object:
+modifier mod_acceleration of movable_object.action_for_movable_object:
     accel_target: acceleration
-    faster_than, slower_than, same_as: PhysicalObject
+    faster_than, slower_than, same_as: physical_object
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_keep_speed of MovableObject.action_for_movable_object:
+modifier mod_keep_speed of movable_object.action_for_movable_object:
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_change_speed of MovableObject.action_for_movable_object:
+modifier mod_change_speed of movable_object.action_for_movable_object:
     speed_target: speed
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_physical_movement of MovableObject.action_for_movable_object:
+modifier mod_physical_movement of movable_object.action_for_movable_object:
     option: movement_options
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
 
-modifier mod_change_lane of MovableObject.action_for_movable_object:
+modifier mod_change_lane of movable_object.action_for_movable_object:
     lane_num: uint
     side: side_left_right
     at_pos: at
     move_mode: movement_mode
     track_mode: track
     shape: any_shape
+

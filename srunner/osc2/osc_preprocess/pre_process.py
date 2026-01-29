@@ -1,11 +1,11 @@
 # Preprocess the osc file to expand the import
 import os
 
-from osc_parser.srunner.osc2.osc_preprocess.import_file import ImportFile
+from osc2_parser.srunner.osc2.osc_preprocess.import_file import ImportFile
 
 # File preprocessor class
-from osc_parser.srunner.osc2.osc_preprocess.import_msg import create_ImportMsg as import_msg
-from osc_parser.srunner.osc2.utils.log_manager import *
+from osc2_parser.srunner.osc2.osc_preprocess.import_msg import create_ImportMsg as import_msg
+from osc2_parser.srunner.osc2.utils.log_manager import *
 
 
 class Preprocess:

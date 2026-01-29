@@ -1,4 +1,4 @@
-from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc2_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
 
 # This interface tags user-defined symbols that have static type information,
 # like variables and functions.

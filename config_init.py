@@ -5,14 +5,6 @@ from .srunner.osc2_dm.physical_object import *
 from .srunner.osc2_dm.physical_types import Physical, Range
 from .srunner.osc2.ast_manager import ast_node
 from .srunner.tools.osc2_helper import OSC2Helper
-from .srunner.osc2_stdlib.modifier import(
-    AccelerationModifier,
-    ChangeLaneModifier,
-    ChangeSpeedModifier,
-    LaneModifier,
-    PositionModifier,
-    SpeedModifier,
-)
 from .srunner.osc2.ast_manager.ast_vistor import ASTVisitor
 from .utils import flat_list
 
@@ -75,6 +67,21 @@ class _GenericPath:
     def min_lanes(self, n):
         self.min_lanes_required = int(n)
 
+def _split_pos_kw(arguments):
+    pos, kw = [], {}
+    from .utils import flat_list
+    if isinstance(arguments, list):
+        for a in flat_list(arguments):
+            if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], str):
+                kw[a[0]] = a[1]
+            else:
+                pos.append(a)
+    elif isinstance(arguments, tuple) and len(arguments) == 2 and isinstance(arguments[0], str):
+        kw[arguments[0]] = arguments[1]
+    elif arguments is not None:
+        pos.append(arguments)
+    return pos, kw
+
 
 debug = False
 class ConfigInit(ASTVisitor):
@@ -104,6 +111,77 @@ class ConfigInit(ASTVisitor):
             "vehicle": _GenericVehicle,
             "person": _GenericPerson,
         }
+
+    def _as_ttc_call(self, x, invoker_guess=None):
+        # Accept either dict {"method":"time_to_collision", ...}
+        if isinstance(x, dict) and x.get("method") == "time_to_collision":
+            return x
+
+        # Or list/tuple like ["ego.time_to_collision", ('reference','other_car')] (your print)
+        if isinstance(x, (list, tuple)) and x:
+            head = x[0]
+            if isinstance(head, str) and (head.endswith(".time_to_collision") or head == "time_to_collision"):
+                ref = None
+                for e in x[1:]:
+                    if isinstance(e, tuple) and e[0] == "reference":
+                        ref = e[1]
+                    elif ref is None and not isinstance(e, tuple):
+                        # allow positional fallback
+                        ref = e
+                out = {"method": "time_to_collision"}
+                if isinstance(head, str) and "." in head:
+                    out["invoker"] = head.split(".", 1)[0]
+                elif invoker_guess:
+                    out["invoker"] = invoker_guess
+                if ref is not None:
+                    out["reference"] = ref
+                return out
+        return None
+
+    def _normalize_until_value(self, pred):
+        from .srunner.osc2_dm.physical_types import Physical
+
+        # already-normalized
+        if isinstance(pred, dict) and "reference" in pred and "time" in pred:
+            return ("until", {"reference": pred["reference"], "time": pred["time"]})
+
+        # op-dict (if your BinaryExpression emitted {"op":..., "left":..., "right":...})
+        if isinstance(pred, dict) and pred.get("op") in ("<", "<=", ">", ">=", "==", "!="):
+            L, R = pred.get("left"), pred.get("right")
+            Lttc = self._as_ttc_call(L)
+            Rttc = self._as_ttc_call(R)
+            if Lttc and isinstance(R, Physical):
+                return ("until", {"reference": Lttc.get("reference"), "time": R})
+            if Rttc and isinstance(L, Physical):
+                return ("until", {"reference": Rttc.get("reference"), "time": L})
+            return ("until", {"predicate": pred})
+
+        # <<< NEW: handle your printed list-shape >>> 
+        # e.g. [ ["ego.time_to_collision", ('reference','other_car')], Physical(10s) ]
+        if isinstance(pred, (list, tuple)) and len(pred) == 2:
+            L, R = pred
+            Lttc = self._as_ttc_call(L)
+            Rttc = self._as_ttc_call(R)
+            if Lttc and isinstance(R, Physical):
+                return ("until", {"reference": Lttc.get("reference"), "time": R})
+            if Rttc and isinstance(L, Physical):
+                return ("until", {"reference": Rttc.get("reference"), "time": L})
+            return ("until", {"predicate": pred})
+
+        # fallback
+        return ("until", {"predicate": pred})
+
+    def visit_until_directive(self, node: ast_node.UntilDirective):
+        """
+        Grammar node for:   until <something>
+        <something> is typically rise(<binary_expr>)
+        We visit the child; visit_modifier_invocation('rise') already unwraps to the predicate.
+        """
+        pred = None
+        for ch in node.get_children():
+            pred = ch.accept(self) if hasattr(ch, "accept") else ch
+            break
+        return self._normalize_until_value(pred)
 
     def _is_path_type(self, t: str) -> bool:
         return str(t).lower() == "path"
@@ -154,10 +232,16 @@ class ConfigInit(ASTVisitor):
         alias("deg",  "degree")
         alias("rad",  "radian")
 
-        # --- accelerations (optional convenience) ---
-        alias("mps2",  "meter_per_sec_sqr")
-        alias("m/s2",  "meter_per_sec_sqr")
-        alias("m/s^2", "meter_per_sec_sqr")
+        # --- acceleration ---
+        alias("mps2",   "meter_per_sec_sqr")
+        alias("m/s2",   "meter_per_sec_sqr")
+        alias("m/s^2",  "meter_per_sec_sqr")
+        alias("kphps",  "kilometer_per_hour_per_sec")
+        alias("kmhps",  "kilometer_per_hour_per_sec")
+        alias("km/h/s", "kilometer_per_hour_per_sec")
+        alias("mphps",  "mile_per_hour_per_sec")
+        alias("ftps2",  "feet_per_sec_sqr")
+        alias("fps2",   "feet_per_sec_sqr")
 
     def _normalize_unit_name(self, name: str) -> str:
         table = {
@@ -172,7 +256,10 @@ class ConfigInit(ASTVisitor):
             # angle
             "deg": "degree", "rad": "radian",
             # accel
+            # acceleration
             "mps2": "meter_per_sec_sqr", "m/s2": "meter_per_sec_sqr", "m/s^2": "meter_per_sec_sqr",
+            "kphps": "kilometer_per_hour_per_sec", "kmhps": "kilometer_per_hour_per_sec", "km/h/s": "kilometer_per_hour_per_sec",
+            "mphps": "mile_per_hour_per_sec", "ftps2": "feet_per_sec_sqr", "fps2": "feet_per_sec_sqr",
         }
         return table.get(name, name)
 
@@ -261,7 +348,12 @@ class ConfigInit(ASTVisitor):
 
     def _resolve_vars(self, obj):
         if isinstance(obj, str):
-            return self.father_ins.variables.get(obj, obj)
+            # If it's a declared variable AND it isn't an actor type, resolve it.
+            val = self.father_ins.variables.get(obj, None)
+            if val is not None and not self._is_actor_type(val):
+                return self._resolve_vars(val)
+            # Otherwise leave the symbol as-is (e.g., keep 'other_car' as a name)
+            return obj
         if isinstance(obj, tuple):
             k, v = obj
             return (k, self._resolve_vars(v))
@@ -334,20 +426,15 @@ class ConfigInit(ASTVisitor):
     def visit_do_member(self, node: ast_node.DoMember):
         name = getattr(node, "label_name", None)
         composition = node.composition_operator
-        
-        if name:
-            if debug: print(f"[DoMember] Block: {name}, Type: {composition.capitalize()}")
-            #pytree stuff
-            block_name = name
-            self.current_block = {
-                "block_name": block_name or "Anonymous Block",
-                "type": composition.capitalize(),  # "parallel" or "serial"
-                "duration": None,
-                "actors": {}
-            }
 
-        else:
-            if debug: print(f"[DoMember] Anonymous Block, Type: {composition.capitalize()}")
+        # create a block even if there's no label
+        block_name = name or "Anonymous Block"
+        self.current_block = {
+            "block_name": block_name,
+            "type": composition.capitalize(),  # "Parallel" / "Serial"
+            "duration": None,
+            "actors": {}
+        }
 
         for child in node.get_children():
             if isinstance(child, ast_node.NamedArgument):
@@ -355,9 +442,7 @@ class ConfigInit(ASTVisitor):
                 if named_arg[0] == "duration":
                     duration = named_arg[1]
                     if isinstance(duration, Physical):
-                        duration_stripped = named_arg[1].gen_physical_value()
-                        self.current_block["duration"] = duration_stripped
-                        if debug: print(f"[{composition.capitalize()}] duration = {duration}")
+                        self.current_block["duration"] = duration.gen_physical_value()
 
             elif isinstance(child, ast_node.BehaviorInvocation):
                 self.visit_behavior_invocation(child)
@@ -367,6 +452,8 @@ class ConfigInit(ASTVisitor):
 
         self.pytree.append(self.current_block)
         self.current_block = None
+
+
 
      # --- NEW: record actor declarations from std osc files ---
     def visit_actor_declaration(self, node: ast_node.ActorDeclaration):
@@ -409,190 +496,59 @@ class ConfigInit(ASTVisitor):
     def visit_behavior_invocation(self, node: ast_node.BehaviorInvocation):
         actor = node.actor
         behavior = node.behavior_name
-        if debug: print(f"[Behavior] {actor}.{behavior}")
-        # Ensure the actor entry exists
-        if actor not in self.current_block["actors"]:
-            self.current_block["actors"][actor] = {
-                "action": None,
-                "args"  : None,
-                "target": None,
-                "modifiers": []
-            }
-        self.current_block["actors"][actor]["action"] = behavior
-        
-        position_args = []
-        keyword_args = {}
-        #if behavior in ["drive", "follow lane", "change lane"]: TODO add diffrent handlers for diffrent vehicle movement types
+
+        if self.current_block is not None:
+            self.current_block["actors"].setdefault(actor, {
+                "action": None, "args": None, "target": None, "modifiers": []
+            })
+            self.current_block["actors"][actor]["action"] = behavior
+        else:
+            # safety net (shouldn't happen now that do_member always creates a block)
+            self.current_block = {"block_name":"Anonymous Block","type":"Parallel","duration":None,"actors":{actor:{
+                "action": behavior, "args": None, "target": None, "modifiers": []
+            }}}
+
+        pos_args, kw_args = [], {}
+
         for child in node.get_children():
             if isinstance(child, ast_node.PositionalArgument):
                 arg = self.visit_positional_argument(child)
-                position_args.append(arg)
-                self.current_block["actors"][actor]["args"] = arg
-
-
-            '''if isinstance(child, ast_node.ModifierInvocation):
-                self.visit(child)'''
-
-            if isinstance(child, ast_node.ModifierInvocation):
-                    modifier_invocation_no_occur = False
-                    modifier = self.visit_modifier_invocation(child)
-                    modifier_name = modifier[0]
-                    arguments = modifier[1]
-
-                    if modifier_name == "speed":
-                        modifier_ins = SpeedModifier(actor, modifier_name)
-                        keyword_args = {}
-
-                        # 'arguments' should already be resolved by visit_modifier_invocation
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                elif isinstance(arg, Physical):
-                                    keyword_args["speed"] = arg
-                                else:
-                                    # allow plain numbers, etc.
-                                    keyword_args["speed"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["speed"] = arguments
-                        else:
-                            # allow resolved scalar (e.g., float) or already-gen'd physical value
-                            keyword_args["speed"] = arguments
-
-                        # unwrap ranges if present
-                        speed_val = keyword_args.get("speed", None)
-                        if isinstance(speed_val, Physical) and isinstance(speed_val.num, Range):
-                            start_val = Physical(int(speed_val.num.start), speed_val.unit)
-                            end_val   = Physical(int(speed_val.num.end),   speed_val.unit)
-                            self.current_block["actors"][actor]["modifiers"].append(
-                                {"speed": (start_val.gen_physical_value(), end_val.gen_physical_value())}
-                            )
-                        elif isinstance(speed_val, Physical):
-                            self.current_block["actors"][actor]["modifiers"].append(
-                                {"speed": speed_val.gen_physical_value()}
-                            )
-                        else:
-                            # already numeric or converted – pass through
-                            self.current_block["actors"][actor]["modifiers"].append({"speed": speed_val})
-
-                        modifier_ins.set_args(keyword_args)
-
-
-                    elif modifier_name == "position":
-                        modifier_ins = PositionModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                elif isinstance(arg, Physical):
-                                    keyword_args["distance"] = arg.gen_physical_value()
-                                else:
-                                    keyword_args["distance"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["distance"] = arguments.gen_physical_value()  # <-- was 'arg'
-                        else:
-                            keyword_args["distance"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-                    elif modifier_name == "lane":
-                        modifier_ins = LaneModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                else:
-                                    keyword_args["lane"] = str(arg)
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        else:
-                            keyword_args["lane"] = str(arguments)
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    elif modifier_name == "acceleration":
-                        modifier_ins = AccelerationModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, list):
-                            arguments = OSC2Helper.flat_list(arguments)
-                            for arg in arguments:
-                                if isinstance(arg, tuple):
-                                    keyword_args[arg[0]] = arg[1]
-                                else:
-                                    keyword_args["acceleration"] = arg
-                        elif isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        else:
-                            keyword_args["acceleration"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    elif modifier_name == "keep_lane":
-                        # self.__cur_behavior.add_child(behavior)
-                        if debug: print("Target keep lane.")
-
-                    # change_speed
-                    elif modifier_name == "change_speed":
-                        modifier_ins = ChangeSpeedModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, tuple):
-                            keyword_args[arguments[0]] = arguments[1]
-                        elif isinstance(arguments, Physical):
-                            keyword_args["change_speed"] = arguments.gen_physical_value()
-                        else:
-                            keyword_args["change_speed"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-
-
-                    # change_lane
-                    elif modifier_name == "change_lane":
-                        modifier_ins = ChangeLaneModifier(actor, modifier_name)
-                        keyword_args = {}
-                        if isinstance(arguments, (list, tuple)):
-                            args_list = list(arguments)
-                            if len(args_list) == 1:
-                                keyword_args["side"] = args_list[0]
-                            elif len(args_list) == 2:
-                                a0, a1 = args_list
-                                if isinstance(a0, tuple):
-                                    keyword_args[a0[0]] = str(a0[1])
-                                else:
-                                    keyword_args["lane_changes"] = str(a0)
-                                if isinstance(a1, tuple):
-                                    keyword_args[a1[0]] = a1[1]
-                                else:
-                                    keyword_args["side"] = a1
-                            else:
-                                return f"Needed 2 arguments, but given {len(args_list)} arguments."
-                        else:
-                            keyword_args["side"] = arguments
-                        modifier_ins.set_args(keyword_args)
-                        self.current_block["actors"][actor]["modifiers"].append(modifier_ins.args)
-                        
-                    else:
-                        raise NotImplementedError(
-                            f"no implentment function: {modifier_name}"
-                        )
-
-
+                pos_args.append(arg)
 
             elif isinstance(child, ast_node.NamedArgument):
-                key, value = self.visit_named_argument(child)
-                keyword_args[key] = value
-        for arg in position_args:#TODO add parsing for modifiers in positional args
-            if debug: print(f"[Positional Arg:] {arg}")
+                # let the modifier handling collect 'until' via UntilDirective; keep other named args
+                if getattr(child, "argument_name", "") != "until":
+                    k, v = self.visit_named_argument(child)
+                    kw_args[k] = v
+                else:
+                    child.accept(self)  # ensure inner expressions get visited
+
+            elif isinstance(child, ast_node.ModifierInvocation):
+                mod = self.visit_modifier_invocation(child)
+                if isinstance(mod, tuple) and len(mod) == 2 and isinstance(mod[0], str):
+                    mname, margs = mod
+                    self.current_block["actors"][actor]["modifiers"].append({"name": mname, "args": margs})
+
+            elif hasattr(ast_node, "UntilDirective") and isinstance(child, ast_node.UntilDirective):
+                mname, margs = self.visit_until_directive(child)
+                print("mname: ", mname," margs: ", margs)
+                if self.current_block is not None:
+                    self.current_block["actors"][actor]["modifiers"].append({"name": mname, "args": margs})
+
+            else:
+                if hasattr(child, "accept"):
+                    child.accept(self)
+
+        # store args (unchanged)
+        if pos_args and not kw_args and len(pos_args) == 1:
+            self.current_block["actors"][actor]["args"] = pos_args[0]
+        elif not pos_args and kw_args:
+            self.current_block["actors"][actor]["args"] = kw_args
+        else:
+            combined = list(pos_args) + [(k, v) for k, v in kw_args.items()]
+            self.current_block["actors"][actor]["args"] = combined
+            
+        
 
     
     def visit_positional_argument(self, node: ast_node.PositionalArgument):
@@ -732,7 +688,6 @@ class ConfigInit(ASTVisitor):
         # evaluate raw children then resolve variables
         arguments = self.visit_children(node)
         arguments = self._resolve_vars(arguments)
-
         # 1) If this is foo.bar(...), try to call method on the named instance
         target_obj = None
         if target_name:
@@ -786,8 +741,53 @@ class ConfigInit(ASTVisitor):
                 pos_args.append(arguments)
             path_function(*pos_args, **kw_args)
             return modifier_name, arguments
+    
+        # Split positional/named for the remaining normalization
+        pos_args, kw_args = _split_pos_kw(arguments)
 
-        # 3) Otherwise: just return (so vehicle actions can still consume it)
+        # --- time_to_collision normalization (already in your code) ---
+        if function_name == "time_to_collision":
+            out = {"method": "time_to_collision"}
+            if target_name:
+                out["invoker"] = target_name
+            if "reference" in kw_args:
+                out["reference"] = kw_args["reference"]
+            elif pos_args:
+                out["reference"] = pos_args[0]
+            return out
+
+        # --- rise(...) just unwraps the predicate (already in your code) ---
+        if function_name == "rise":
+            pred = pos_args[0] if pos_args else kw_args.get("predicate")
+            return pred
+
+        # --- NEW: until rise( ego.time_to_collision(...) < 10s ) ---
+        if function_name == "until":
+            # unwrap the predicate produced by rise(...)
+            pred = pos_args[0] if pos_args else kw_args.get("predicate")
+
+            ref = None
+            thr = None
+            if isinstance(pred, dict) and pred.get("op") in ("<", "<=", ">", ">=", "==", "!="):
+                L, R = pred.get("left"), pred.get("right")
+
+                def _is_ttc(x):
+                    return isinstance(x, dict) and x.get("method") == "time_to_collision"
+
+                # TTC < T  or  T > TTC
+                from .srunner.osc2_dm.physical_types import Physical
+                if _is_ttc(L) and isinstance(R, Physical):
+                    ref, thr = L.get("reference"), R
+                elif _is_ttc(R) and isinstance(L, Physical):
+                    ref, thr = R.get("reference"), L
+
+            if ref is not None and thr is not None:
+                return ("until", {"reference": ref, "time": thr})
+            else:
+                # Not a TTC comparison → keep the raw predicate so downstream can handle/fail cleanly
+                return ("until", {"predicate": pred})
+
+        # default passthrough
         return modifier_name, arguments
 
     def visit_event_declaration(self, node: ast_node.EventDeclaration):
@@ -823,7 +823,6 @@ class ConfigInit(ASTVisitor):
             if isinstance(child, ast_node.MethodBody):
                 self.visit_method_body(child)
 
-
     def visit_method_body(self, node: ast_node.MethodBody):
         # type = node.type
         for child in node.get_children():
@@ -831,6 +830,28 @@ class ConfigInit(ASTVisitor):
                 self.visit_binary_expression(child)
 
     def visit_binary_expression(self, node: ast_node.BinaryExpression):
+        # First try the simple structured path
+        lr = self.visit_children(node)
+        op = node.operator
+
+        left = right = None
+        if isinstance(lr, (list, tuple)) and len(lr) == 2:
+            left, right = lr
+
+        # 1) Structured comparisons (new behavior — previously broken)
+        if op in ('<', '>', '<=', '>=', '==', '!=') and left is not None and right is not None:
+            return {"op": op, "left": left, "right": right}
+
+        # 2) Normal arithmetic (unchanged behavior)
+        if left is not None and right is not None and op in ('+', '-', '*', '/', '%'):
+            if op == '+':  return left + right
+            if op == '-':  return left - right
+            if op == '*':  return left * right
+            if op == '/':  return left / right
+            if op == '%':  return left % right
+
+        # 3) Legacy fallback — your original stack-machine path
+        #    (keeps any quirky cases working exactly as before)
         args = [self.visit_children(node), node.operator]
         flat = flat_list(args)
         stack = []
@@ -838,7 +859,6 @@ class ConfigInit(ASTVisitor):
             if token in ('+', '-', '*', '/', '%'):
                 right = stack.pop()
                 left = stack.pop()
-                # both sides should already be numeric (int/float) from literal visitors
                 if token == '+': stack.append(left + right)
                 elif token == '-': stack.append(left - right)
                 elif token == '*': stack.append(left * right)
@@ -848,8 +868,16 @@ class ConfigInit(ASTVisitor):
                 stack.append(token)
         return stack.pop()
 
-    def visit_named_argument(self, node: ast_node.NamedArgument):
-        return node.argument_name, self.visit_children(node)
+    def visit_named_argument(self, node):
+        """
+        Safely evaluate a NamedArgument's value (which may be a primitive or AST),
+        unwrap singletons, and resolve variable references.
+        Returns: (name, value)
+        """
+        val = self.visit_children(node)  # already handles AST vs primitives
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
+        return node.argument_name, self._resolve_vars(val)
 
     def visit_range_expression(self, node: ast_node.RangeExpression):
         start, end = self.visit_children(node)
@@ -872,20 +900,18 @@ class ConfigInit(ASTVisitor):
         else:
             start_num = start
             end_num = end
-
         if start_unit is not None and end_unit is not None:
             if start_unit == end_unit:
                 unit_name = start_unit
             else:
                 print("[Error] wrong unit in the range")
                 sys.exit(1)
-
+        
         if start_num >= end_num:
             print("[Error] wrong start and end in the range")
             sys.exit(1)
 
         var_range = Range(start_num, end_num)
-
         if unit_name:
             return Physical(var_range, unit_name)
         else:

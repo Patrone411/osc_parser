@@ -1,8 +1,8 @@
 import random
 import sys
 
-from osc_parser.srunner.osc2_dm.physical_types import Physical
-from osc_parser.srunner.osc2_stdlib.misc_object import AVCarSide, ScenarioEvent
+from osc2_parser.srunner.osc2_dm.physical_types import Physical
+from osc2_parser.srunner.osc2_stdlib.misc_object import AVCarSide, ScenarioEvent
 from .vehicle import Vehicle
 
 

@@ -1,4 +1,4 @@
-from osc_parser.srunner.osc2.symbol_manager.base_scope import BaseScope
+from osc2_parser.srunner.osc2.symbol_manager.base_scope import BaseScope
 
 
 # Global scope

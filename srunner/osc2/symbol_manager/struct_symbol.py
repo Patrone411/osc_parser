@@ -1,5 +1,5 @@
-from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
-from osc_parser.srunner.osc2.symbol_manager.inherits_condition_symbol import StructInhertsSymbol
+from osc2_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc2_parser.srunner.osc2.symbol_manager.inherits_condition_symbol import StructInhertsSymbol
 
 
 class StructSymbol(BaseSymbol):

@@ -1,5 +1,5 @@
 #import srunner.scenariomanager.carla_data_provider as carla_data
-from osc_parser.srunner.osc2_dm.physical_types import Physical
+from osc2_parser.srunner.osc2_dm.physical_types import Physical
 
 
 class Path:

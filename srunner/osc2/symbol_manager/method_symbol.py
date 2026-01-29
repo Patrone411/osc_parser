@@ -1,5 +1,5 @@
-from osc_parser.srunner.osc2.symbol_manager.argument_symbol import ArgumentSpecificationSymbol
-from osc_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
+from osc2_parser.srunner.osc2.symbol_manager.argument_symbol import ArgumentSpecificationSymbol
+from osc2_parser.srunner.osc2.symbol_manager.base_symbol import BaseSymbol
 
 
 class MethodSymbol(BaseSymbol):
